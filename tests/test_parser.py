@@ -88,7 +88,7 @@ class TestParseText(unittest.TestCase):
         self.assertEqual(parse_text("12345678"), [])
 
     def test_bare_numbers_when_enabled(self):
-        # 显式打开：6-13 位才识别（年份 4 位仍然不识别）
+        # 显式打开：6-16 位才识别（年份 4 位仍然不识别）
         from bilibili_tool.parser import parse_text as pt
         self.assertEqual(pt("170001", allow_bare_numbers=True), [ParsedItem("av", "170001", "170001")])
         self.assertEqual(pt("12345678", allow_bare_numbers=True), [ParsedItem("av", "12345678", "12345678")])

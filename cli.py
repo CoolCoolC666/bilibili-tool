@@ -129,7 +129,7 @@ def main(argv=None) -> int:
     parse.add_argument(
         "--allow-bare-numbers",
         action="store_true",
-        help="允许把 6-13 位裸数字当 AV 号（默认关闭，避免把年份/统计数字误识别）。"
+        help="允许把 6-16 位裸数字当 AV 号（默认关闭，避免把年份/统计数字误识别）。"
         "如确需识别 '170001' 这种裸号，加此开关；BV / av 前缀 / URL 永远会被识别。",
     )
 

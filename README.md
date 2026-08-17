@@ -132,7 +132,7 @@ python cli.py "BV1FpLU62EZW av170001 https://www.bilibili.com/video/BV1hy4y1B7sX
   --timeout SECONDS       单次请求超时秒，默认 10
 
 解析
-  --allow-bare-numbers    允许把 6-13 位裸数字当 AV 号
+  --allow-bare-numbers    允许把 6-16 位裸数字当 AV 号
                           （默认关闭，避免把年份/统计数字误识别；
                           开了之后 "170001" 才会被识别）
 ```
@@ -159,7 +159,7 @@ python cli.py "https://www.bilibili.com/video/BV1hy4y1B7sX"
 python cli.py --allow-bare-numbers "170001"
 ```
 
-开了之后，6-13 位的纯数字才会被识别（年份 4 位数字仍然不会被识别，放心）。
+开了之后，6-16 位的纯数字才会被识别（年份 4 位数字仍然不会被识别，放心）。
 
 ### 示例
 
@@ -395,7 +395,7 @@ bilibili_tool_v2/
 ### v2.1.0（2026-08-17）
 
 - **修复**：默认不再把 4-5 位裸数字（年份/统计数字）当 AV 号。版权清单这类含大量数字的文本过去会污染结果，现在默认安全
-- **新增**：`--allow-bare-numbers` CLI 开关 / Web UI checkbox，需要时手动开启（识别 6-13 位裸数字）
+- **新增**：`--allow-bare-numbers` CLI 开关 / Web UI checkbox，需要时手动开启（识别 6-16 位裸数字）
 - **新增**：测试用例覆盖回归场景
 
 ### v2.0.0（2026-08）
