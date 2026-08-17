@@ -152,8 +152,65 @@ class TestParseText(unittest.TestCase):
             [ParsedItem("av", "113102813136198", "https://www.bilibili.com/video/av113102813136198")],
         )
 
+    def test_scientific_notation_recognized(self):
+        """Excel 复制出来的科学记数法 AV 号（如 1.13103E+14）也能识别。
+
+        精度会丢失（113103000000000 vs 真实 113102813136198），但 parser 不做
+        语义判断，让 B 站 API 自己决定。
+        """
+        # 裸科学记数法
+        items = parse_text("1.13103E+14")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "av")
+        self.assertEqual(items[0].value, "113103000000000")  # 精度丢失
+        self.assertTrue(items[0].from_scientific)
+
+        # 小写 e
+        items = parse_text("1.13103e+14")
+        self.assertEqual(items[0].value, "113103000000000")
+
+        # 没 +
+        items = parse_text("1.13103E14")
+        self.assertEqual(items[0].value, "113103000000000")
+
+        # 负指数不识别
+        items = parse_text("1.5E-3")
+        self.assertEqual(items, [])
+
+        # 太短（< 6 位）不识别（避免把 1.0E+2 = 100 当 AV 号）
+        items = parse_text("1.0E+2")
+        self.assertEqual(items, [])
+
+        # av 前缀 + 科学记数法
+        items = parse_text("av1.13103E+14")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].value, "113103000000000")
+        self.assertTrue(items[0].from_scientific)
+
+    def test_scientific_in_mixed_text(self):
+        """混合输入：科学记数法 + 普通 AV + 纯数字 + BV。"""
+        text = """1.13103E+14
+1103528937
+BV1FpLU62EZW
+"""
+        items = parse_text(text)
+        kinds = [i.kind for i in items]
+        values = [i.value for i in items]
+        self.assertEqual(kinds, ["av", "bv"])
+        # 注意：1103528937 不会被识别（默认不识别裸数字）
+        self.assertEqual(values, ["113103000000000", "BV1FpLU62EZW"])
+        # 第一个标记为科学记数法
+        self.assertTrue(items[0].from_scientific)
+        self.assertFalse(items[1].from_scientific)
+
+    def test_scientific_dedupes_same_value(self):
+        """同一个数字用科学记数法 + 普通写两次，应该去重。"""
+        items = parse_text("1.13103E+14 113103000000000")
+        # 两种写法转成同一个 aid，去重后只 1 条
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].value, "113103000000000")
+
     def test_chunshanxiang_av_list(self):
-        """回归测试：用户给的 33 个 AV 号（春山响相关）全部能被识别出来。"""
         avs = """AV113102813136198
 AV113458423078711
 AV1103528937

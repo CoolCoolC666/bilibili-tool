@@ -32,17 +32,24 @@ class ParsedItem:
     kind: str          # "av" | "bv" | "short_url"
     value: str         # "170001" 或 "BV1xxx"
     raw: str = ""      # 用户原始片段
+    from_scientific: bool = False  # 是否由科学记数法转换（精度可能丢失）
 
     def __repr__(self) -> str:
-        return f"ParsedItem({self.kind}={self.value!r})"
+        suffix = " (from scientific)" if self.from_scientific else ""
+        return f"ParsedItem({self.kind}={self.value!r}{suffix})"
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, ParsedItem):
             return NotImplemented
-        return self.kind == other.kind and self.value == other.value and self.raw == other.raw
+        return (
+            self.kind == other.kind
+            and self.value == other.value
+            and self.raw == other.raw
+            and self.from_scientific == other.from_scientific
+        )
 
     def __hash__(self) -> int:
-        return hash((self.kind, self.value, self.raw))
+        return hash((self.kind, self.value, self.raw, self.from_scientific))
 
 
 # 数字
@@ -51,6 +58,14 @@ RE_DIGITS = re.compile(r"\d+")
 # 但有些抓取工具会用动态/评论/专栏 ID（18 位）当 av 传过来，
 # parser 不做语义判断，让 B 站 API 决定是否有效）
 RE_AV = re.compile(r"\bav(\d{1,20})\b", re.IGNORECASE)
+# av 前缀 + 科学记数法：av1.13103E+14
+# 不用 \b：避免"av1.13103E+14"被 RE_AV 截到"av1"后，RE_SCIENTIFIC 又匹配"13103E+14"
+# 改用更严格的"前一个字符是 av"
+RE_AV_SCI = re.compile(r"\bav(\d+(?:\.\d+)?[eE][+\-]?\d{1,3})\b", re.IGNORECASE)
+# 裸科学记数法：1.13103E+14（来自 Excel 复制）
+# 用 (?<![.\w]) lookbehind 排除"前一个字符是 . 或字母数字"的情况
+# （避免匹配 "av1.13103E+14" 中的 "13103E+14" 片段）
+RE_SCIENTIFIC = re.compile(r"(?<![.\w])(\d+(?:\.\d+)?[eE][+\-]?\d{1,3})\b")
 # BV 前缀（BV1 + 10 位字符）
 RE_BV = re.compile(r"\bBV1[1-9A-HJ-NP-Za-km-z]{9}\b", re.IGNORECASE)
 # 完整 URL（bilibili.com/video/...）
@@ -60,6 +75,22 @@ RE_URL = re.compile(
 )
 # b23.tv 短链
 RE_SHORT = re.compile(r"https?://b23\.tv/[\w]+", re.IGNORECASE)
+
+
+def _scientific_to_int(s: str) -> Optional[int]:
+    """把 '1.13103E+14' / '1.13103e14' 转成 int。
+
+    注意：**精度会丢失**——Excel 显示 1.13103E+14 时，实际存储是 113103000000000，
+    跟 B 站真实 aid 113102813136198 差了 1.87 亿。
+    但 parser 不做语义判断，让 B 站 API 自己决定是否有效。
+    """
+    try:
+        n = int(round(float(s)))
+    except (ValueError, OverflowError):
+        return None
+    if n < 0:
+        return None
+    return n
 
 
 def _dedupe_keep_order(items: List[ParsedItem]) -> List[ParsedItem]:
@@ -130,14 +161,42 @@ def parse_text(text: str, *, allow_bare_numbers: bool = False) -> List[ParsedIte
         collected.append((m.start(), ParsedItem("bv", m.group(0), m.group(0))))
         _mark(m.span())
 
-    # 4) 显式 av 标记
+    # 4) 显式 av + 科学记数法：av1.13103E+14（**先跑**，避免被 RE_AV 截成 av1）
+    for m in RE_AV_SCI.finditer(text):
+        if _overlaps(m.span()):
+            continue
+        n = _scientific_to_int(m.group(1))
+        if n is not None and 1 <= len(str(n)) <= 20:
+            collected.append((
+                m.start(),
+                ParsedItem("av", str(n), m.group(0), from_scientific=True),
+            ))
+            _mark(m.span())
+
+    # 5) 显式 av 标记（普通数字）
     for m in RE_AV.finditer(text):
         if _overlaps(m.span()):
             continue
         collected.append((m.start(), ParsedItem("av", m.group(1), m.group(0))))
         _mark(m.span())
 
-    # 5) 纯数字（剩余未消费片段）—— 默认不识别，避免把版权清单里的
+    # 6) 裸科学记数法：1.13103E+14（来自 Excel 复制粘贴）
+    # 精度会丢失（Excel 显示是 113103000000000，真实 aid 可能是 113102813136198），
+    # 但 parser 不做语义判断，让 B 站 API 自己决定是否有效。
+    for m in RE_SCIENTIFIC.finditer(text):
+        if _overlaps(m.span()):
+            continue
+        n = _scientific_to_int(m.group(1))
+        if n is None:
+            continue
+        s = str(n)
+        # 长度必须在 6-20 位之间（避免把 1.0E+2 = 100 这种短数字当 AV 号）
+        if not (6 <= len(s) <= 20):
+            continue
+        collected.append((m.start(), ParsedItem("av", s, m.group(0), from_scientific=True)))
+        _mark(m.span())
+
+    # 7) 纯数字（剩余未消费片段）—— 默认不识别，避免把版权清单里的
     # 年份"2026""1949"和统计数字"100""10086"误当 AV 号查询；
     # 启用 allow_bare_numbers 后才识别 6-13 位的数字（B 站 av 号当前范围）。
     if allow_bare_numbers:
