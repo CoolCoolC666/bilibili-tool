@@ -86,6 +86,16 @@ def main(argv=None) -> int:
         action="store_false",
         help="不去重，保留所有记录（即使同一视频出现多次）",
     )
+    out.add_argument(
+        "--exclude-invalid",
+        action="store_true",
+        help=(
+            "导出时排除无效视频（不统计）。"
+            "只保留 status == 'ok' 的成功抓取记录，"
+            "自动剔除 not_found / failed 等失效条目。"
+            "默认关闭，保留原始全部导出行为。"
+        ),
+    )
 
     cache = parser.add_argument_group("缓存")
     cache.add_argument("--cache", default=DEFAULT_CACHE, help="缓存文件路径")
@@ -223,23 +233,28 @@ def main(argv=None) -> int:
 
     saved = {}
     fmt = args.format
+    excl = args.exclude_invalid
     if fmt == "all":
-        saved = export_all(results, base=base, out_dir=args.out_dir, dedupe=args.dedupe)
+        saved = export_all(results, base=base, out_dir=args.out_dir, dedupe=args.dedupe, exclude_invalid=excl)
     elif fmt == "xlsx":
-        from bilibili_tool.exporter import save_xlsx, dedupe_videos as _dedupe
-        rows = _dedupe(results) if args.dedupe else results
+        from bilibili_tool.exporter import save_xlsx, dedupe_videos as _dedupe, filter_valid as _filt
+        rows = _filt(results) if excl else results
+        rows = _dedupe(rows) if args.dedupe else rows
         saved["xlsx"] = save_xlsx(rows, os.path.join(args.out_dir, f"{base}.xlsx"))
     elif fmt == "csv":
-        from bilibili_tool.exporter import save_csv, dedupe_videos as _dedupe
-        rows = _dedupe(results) if args.dedupe else results
+        from bilibili_tool.exporter import save_csv, dedupe_videos as _dedupe, filter_valid as _filt
+        rows = _filt(results) if excl else results
+        rows = _dedupe(rows) if args.dedupe else rows
         saved["csv"] = save_csv(rows, os.path.join(args.out_dir, f"{base}.csv"))
     elif fmt == "json":
-        from bilibili_tool.exporter import save_json, dedupe_videos as _dedupe
-        rows = _dedupe(results) if args.dedupe else results
+        from bilibili_tool.exporter import save_json, dedupe_videos as _dedupe, filter_valid as _filt
+        rows = _filt(results) if excl else results
+        rows = _dedupe(rows) if args.dedupe else rows
         saved["json"] = save_json(rows, os.path.join(args.out_dir, f"{base}.json"))
     elif fmt == "txt":
-        from bilibili_tool.exporter import save_txt, dedupe_videos as _dedupe
-        rows = _dedupe(results) if args.dedupe else results
+        from bilibili_tool.exporter import save_txt, dedupe_videos as _dedupe, filter_valid as _filt
+        rows = _filt(results) if excl else results
+        rows = _dedupe(rows) if args.dedupe else rows
         saved["txt"] = save_txt(rows, os.path.join(args.out_dir, f"{base}.txt"))
 
     for k, v in saved.items():

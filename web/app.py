@@ -235,16 +235,20 @@ def _run_job(job: Job) -> None:
                 base=base,
                 out_dir=DEFAULT_OUT,
                 dedupe=job.options.get("dedupe", True),
+                exclude_invalid=job.options.get("exclude_invalid", False),
             )
             for fmt, path in saved.items():
                 job.outputs[fmt] = os.path.basename(path)
                 job.push_log(f"📦 导出 {fmt}: {os.path.basename(path)}")
-            if job.options.get("dedupe", True):
-                n_raw = len(job.results)
-                from bilibili_tool.exporter import dedupe_videos as _dedupe
-                n_dedup = len(_dedupe(job.results))
-                if n_raw != n_dedup:
-                    job.push_log(f"  ↪ 去重：{n_raw} 条 → {n_dedup} 条")
+            n_raw = len(job.results)
+            from bilibili_tool.exporter import dedupe_videos as _dedupe, filter_valid as _filt
+            n_after_filter = len(_filt(job.results)) if job.options.get("exclude_invalid", False) else n_raw
+            n_final = len(_dedupe(_filt(job.results) if job.options.get("exclude_invalid", False) else job.results))
+            n_dedup_diff = n_after_filter - n_final
+            if job.options.get("exclude_invalid", False) and n_raw != n_after_filter:
+                job.push_log(f"  ↪ 排除失效：{n_raw} 条 → {n_after_filter} 条")
+            if job.options.get("dedupe", True) and n_dedup_diff:
+                job.push_log(f"  ↪ 去重：{n_after_filter} 条 → {n_final} 条")
         except Exception as e:
             job.push_log(f"⚠ 导出失败: {e}")
 
@@ -280,6 +284,7 @@ def create_job():
         "allow_bare_numbers": bool(data.get("allow_bare_numbers", False)),
         "max_age": data.get("max_age", "1h"),
         "dedupe": bool(data.get("dedupe", True)),
+        "exclude_invalid": bool(data.get("exclude_invalid", False)),
     }
     job_id = uuid.uuid4().hex[:12]
     job = Job(job_id, targets, options)

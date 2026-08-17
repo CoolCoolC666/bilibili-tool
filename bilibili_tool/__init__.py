@@ -10,6 +10,7 @@ from .exporter import (
     save_txt,
     export_all,
     dedupe_videos,
+    filter_valid,
 )
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "save_txt",
     "export_all",
     "dedupe_videos",
+    "filter_valid",
 ]
 
-__version__ = "2.6.0"
+__version__ = "2.7.0"

@@ -114,6 +114,7 @@ async function startJob() {
     allow_bare_numbers: el("allow_bare_numbers").checked,
     max_age: el("max_age").value || "1h",
     dedupe: el("dedupe").checked,
+    exclude_invalid: el("exclude_invalid").checked,
   };
 
   el("start").disabled = true;

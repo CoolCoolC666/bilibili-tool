@@ -95,8 +95,22 @@ class TestParseText(unittest.TestCase):
         # 年份仍然不识别（4 位 < 6 位）
         self.assertEqual(pt("2026 1949 1917", allow_bare_numbers=True), [])
 
+    def test_bare_numbers_upper_limit(self):
+        """--allow-bare-numbers 模式下，6-16 位数字识别；超过 16 位拒绝（避免误识别）。"""
+        # 6 位边界
+        self.assertEqual(len(parse_text("100000", allow_bare_numbers=True)), 1)
+        # 13 位（旧的硬编码上限）现在仍识别
+        self.assertEqual(len(parse_text("1234567890123", allow_bare_numbers=True)), 1)
+        # 15 位（用户的真实场景）
+        items = parse_text("113102813136198", allow_bare_numbers=True)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].value, "113102813136198")
+        # 16 位边界
+        self.assertEqual(len(parse_text("1234567890123456", allow_bare_numbers=True)), 1)
+        # 17 位（超过上限）不识别
+        self.assertEqual(len(parse_text("12345678901234567", allow_bare_numbers=True)), 0)
+
     def test_banquan_text_does_not_misfire(self):
-        """回归测试：版权清单这类含大量年份/数字的文本，默认模式下不应误识别为 AV。"""
         # 取自 ../测试数据/版权清单.txt 的前 15 行片段（无 bangumi/ep URL）
         text = """▶ [1] 今天，带你重读人民英雄纪念碑碑文！
   👤 UP主: 中国军号

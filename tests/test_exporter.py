@@ -13,6 +13,7 @@ from bilibili_tool.exporter import (
     save_json,
     save_txt,
     export_all,
+    filter_valid,
     _dedupe_key,
 )
 from bilibili_tool.models import VideoInfo
@@ -171,6 +172,62 @@ class TestExportFormats(unittest.TestCase):
         with open(saved["csv"], encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
         self.assertEqual(len(rows), 2, f"不去重应保留 2 条，实际 {len(rows)}")
+
+    def test_filter_valid(self):
+        ok1 = make(bvid="BV1a", title="A")
+        ok2 = make(bvid="BV1b", title="B")
+        fail1 = make(bvid="BV1c", status="not_found", api_code=62002)
+        fail2 = make(bvid="BV1d", status="failed", error="network")
+        out = filter_valid([ok1, fail1, ok2, fail2])
+        self.assertEqual(len(out), 2)
+        self.assertEqual([v.bvid for v in out], ["BV1a", "BV1b"])
+
+    def test_export_all_exclude_invalid(self):
+        """--exclude-invalid 开启时，导出文件只含 status=ok 的记录。"""
+        ok = make(bvid="BV1a", title="A")
+        fail = make(bvid="BV1c", status="not_found", api_code=62002)
+        saved = export_all(
+            [ok, fail, fail],
+            base="test",
+            out_dir=self.tmpdir,
+            exclude_invalid=True,
+        )
+        # CSV 应只有 1 行
+        with open(saved["csv"], encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(len(rows), 1, f"应只 1 条 ok 记录，实际 {len(rows)}")
+        self.assertEqual(rows[0]["BV号"], "BV1a")
+
+    def test_export_all_exclude_invalid_false_keeps_failed(self):
+        """--exclude-invalid 关闭时（默认），保留所有状态。"""
+        ok = make(bvid="BV1a", title="A")
+        fail = make(bvid="BV1c", status="not_found", api_code=62002)
+        saved = export_all(
+            [ok, fail],
+            base="test",
+            out_dir=self.tmpdir,
+            exclude_invalid=False,
+        )
+        with open(saved["csv"], encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(len(rows), 2)
+
+    def test_export_all_filter_before_dedupe(self):
+        """过滤应在去重之前：同一视频的 ok + failed 两种状态，先 filter 再 dedupe。"""
+        ok = make(bvid="BV1x", title="OK")
+        fail_same = make(bvid="BV1x", status="not_found", api_code=62002)
+        # 开启 filter：fail 过滤掉，ok 保留；去重：1 条
+        saved = export_all(
+            [ok, fail_same],
+            base="test",
+            out_dir=self.tmpdir,
+            exclude_invalid=True,
+            dedupe=True,
+        )
+        with open(saved["csv"], encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["状态"], "ok")
 
 
 if __name__ == "__main__":

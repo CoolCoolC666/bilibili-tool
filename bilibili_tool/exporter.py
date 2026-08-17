@@ -83,6 +83,17 @@ def dedupe_videos(videos: Iterable[VideoInfo]) -> List[VideoInfo]:
     return out
 
 
+def filter_valid(
+    videos: Iterable[VideoInfo],
+) -> List[VideoInfo]:
+    """只保留 status == "ok" 的成功抓取记录，过滤掉 not_found / failed。
+
+    适用场景：写论文/数据分析时只关心"成功抓到的样本"，不想 Excel 里
+    满是"稿件不存在"的失效条目。
+    """
+    return [v for v in videos if v.status == "ok"]
+
+
 def save_xlsx(videos: Iterable[VideoInfo], path: str) -> str:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -197,12 +208,20 @@ def export_all(
     base: str,
     out_dir: str = "output",
     dedupe: bool = True,
+    exclude_invalid: bool = False,
 ) -> dict:
     """一键导出 xlsx + csv + json + txt，base 是输出文件名前缀。
 
-    dedupe=True 时按 (bvid, aid, raw_input) 去重，**保留第一次**出现的。
-    dedupe=False 时保留所有（包括同一视频的多次出现）。
+    参数：
+      dedupe=True        按 (bvid, aid, raw_input) 去重，保留第一次。
+      dedupe=False       保留所有（包括同一视频的多次出现）。
+      exclude_invalid=True  过滤掉 status != "ok" 的失效条目。
+      exclude_invalid=False 保留全部状态。
+
+    处理顺序：**先过滤后去重**（逻辑更清晰，过滤掉的视频不再参与去重计算）。
     """
+    if exclude_invalid:
+        videos = filter_valid(videos)
     if dedupe:
         videos = dedupe_videos(videos)
     saved = {}

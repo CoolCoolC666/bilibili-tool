@@ -39,6 +39,9 @@ https://b23.tv/xxxxxx"></textarea>
           <label class="inline" title="默认勾选。导出时按 (BV, AV) 去重，同一视频只出现一行">
             <input id="dedupe" type="checkbox" checked /> 导出时去重（同一视频只留一行）
           </label>
+          <label class="inline" title="默认关闭。开启后只导出成功抓取的视频，自动剔除「稿件不存在」等失效条目，适合论文/数据分析">
+            <input id="exclude_invalid" type="checkbox" /> 导出时排除无效视频（不统计）
+          </label>
           <label class="inline" title="默认关闭，避免把年份/统计数字误识别为 AV 号">
             <input id="allow_bare_numbers" type="checkbox" /> 允许识别 6-13 位裸数字为 AV 号
           </label>

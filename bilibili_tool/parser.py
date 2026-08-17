@@ -198,16 +198,16 @@ def parse_text(text: str, *, allow_bare_numbers: bool = False) -> List[ParsedIte
 
     # 7) 纯数字（剩余未消费片段）—— 默认不识别，避免把版权清单里的
     # 年份"2026""1949"和统计数字"100""10086"误当 AV 号查询；
-    # 启用 allow_bare_numbers 后才识别 6-13 位的数字（B 站 av 号当前范围）。
+    # 启用 allow_bare_numbers 后才识别 6-16 位的数字（覆盖现行 15 位 AV 号）。
     if allow_bare_numbers:
         for m in RE_DIGITS.finditer(text):
             if _overlaps(m.span()):
                 continue
             n = m.group(0)
-            # 6-13 位：B 站 av 号当前合理范围
+            # 6-16 位：
             # 短于 6 位（< 100000）的数字大概率是误识别（年份/统计/页码）
-            # 长于 13 位直接不是合法 av 号
-            if 6 <= len(n) <= 13:
+            # 长于 16 位（含 18 位动态/评论 ID）交给 RE_AV 那种显式 av 前缀的场景
+            if 6 <= len(n) <= 16:
                 collected.append((m.start(), ParsedItem("av", n, m.group(0))))
                 _mark(m.span())
 
