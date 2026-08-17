@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>B 站视频信息抓取工具</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header>
+    <h1>🎬 B 站视频信息抓取工具</h1>
+    <p class="subtitle">支持 AV / BV / 完整 URL / b23.tv 短链 · 自动缓存 · 断点续传</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>① 输入待抓取的 ID / 链接</h2>
+      <textarea id="targets" rows="6" placeholder="一行一个，也可以空格 / 逗号 / 换行混合：
+BV1FpLU62EZW
+av170001
+https://www.bilibili.com/video/BV14QLU6dEuf
+https://b23.tv/xxxxxx"></textarea>
+
+      <details class="options">
+        <summary>高级选项</summary>
+        <div class="grid">
+          <label>请求间隔 (秒) <input id="delay" type="number" step="0.1" value="0.5" /></label>
+          <label>重试次数 <input id="retry" type="number" min="0" max="5" value="1" /></label>
+          <label>超时 (秒) <input id="timeout" type="number" step="0.5" value="10" /></label>
+          <label class="inline"><input id="no_cache" type="checkbox" /> 忽略已有缓存</label>
+          <label class="inline" title="默认关闭，避免把年份/统计数字误识别为 AV 号">
+            <input id="allow_bare_numbers" type="checkbox" /> 允许识别 6-13 位裸数字为 AV 号
+          </label>
+        </div>
+      </details>
+
+      <div class="actions">
+        <button id="start" class="primary">开始抓取</button>
+        <button id="clear_log">清空日志</button>
+        <span class="cache-info" id="cache_info">缓存：—</span>
+      </div>
+    </section>
+
+    <section class="card" id="progress_card" hidden>
+      <h2>② 进度</h2>
+      <div class="progress-row">
+        <div class="bar"><div class="bar-fill" id="bar_fill"></div></div>
+        <div class="counter" id="counter">0 / 0</div>
+      </div>
+      <div class="stats">
+        <span>成功 <b id="ok_count">0</b></span>
+        <span>失败 <b id="failed_count">0</b></span>
+        <span>缓存命中 <b id="from_cache">0</b></span>
+        <span class="status-tag" id="status_tag">pending</span>
+      </div>
+      <pre id="log" class="log"></pre>
+    </section>
+
+    <section class="card" id="result_card" hidden>
+      <h2>③ 结果</h2>
+      <div class="downloads" id="downloads"></div>
+      <div class="table-wrap">
+        <table id="result_table">
+          <thead>
+            <tr>
+              <th>状态</th>
+              <th>BV / AV</th>
+              <th>标题</th>
+              <th>UP主</th>
+              <th>播放</th>
+              <th>👍</th>
+              <th>💬</th>
+              <th>发布时间</th>
+              <th>链接</th>
+            </tr>
+          </thead>
+          <tbody id="result_body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>本地工具 · 纯前端 + Flask 后端 · 数据只存于本地缓存 <code>data/cache.json</code></p>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
