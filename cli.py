@@ -21,6 +21,7 @@ from bilibili_tool import (
     export_all,
     parse_text,
 )
+from bilibili_tool.cache import parse_duration
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -75,7 +76,24 @@ def main(argv=None) -> int:
 
     cache = parser.add_argument_group("缓存")
     cache.add_argument("--cache", default=DEFAULT_CACHE, help="缓存文件路径")
-    cache.add_argument("--no-cache", action="store_true", help="忽略已有缓存")
+    cache.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="完全不用缓存（等价于 --max-age 0）",
+    )
+    cache.add_argument(
+        "--max-age",
+        type=str,
+        default="1h",
+        help=(
+            "动态字段（播放/点赞/收藏/评论/弹幕）的最大缓存年龄。"
+            "格式：'30m' / '1h' / '24h' / '7d'。"
+            "'0' = 完全不用缓存，'never' = 永远信任缓存（不推荐）。"
+            "默认 '1h'，与 Web 端「实时（1h 内）」一致。"
+            "静态字段（标题/UP主/发布时间/时长）永远缓存，不受此选项影响。"
+            "失败/失效状态也永远缓存。"
+        ),
+    )
     cache.add_argument("--reset-cache", action="store_true", help="清空缓存后开始")
     cache.add_argument("--save-cache", action="store_true", default=True, help="抓取后写回缓存（默认开）")
 
@@ -114,7 +132,19 @@ def main(argv=None) -> int:
     if args.reset_cache and os.path.exists(args.cache):
         os.remove(args.cache)
         print(f"[i] 已清空缓存: {args.cache}")
-    cache_obj = Cache(args.cache) if not args.no_cache else None
+
+    # 解析 max-age
+    if args.no_cache:
+        max_age_seconds = 0
+        max_age_desc = "0（不用缓存）"
+    else:
+        max_age_seconds = parse_duration(args.max_age)
+        if max_age_seconds is None:
+            max_age_seconds = 3600  # 默认 1h（防御性，argparse default 也是 1h）
+        max_age_desc = args.max_age
+
+    cache_obj = Cache(args.cache) if max_age_seconds != 0 else None
+    print(f"[i] 缓存策略: max-age = {max_age_desc}（静态字段永远，失败状态永远）")
 
     # 4) 构建 fetcher
     fetcher = BilibiliVideoFetcher(max_retries=args.retry, timeout=args.timeout)
@@ -129,12 +159,27 @@ def main(argv=None) -> int:
 
     for i, item in enumerate(parsed, 1):
         if cache_obj:
-            cached = cache_obj.get(_skeleton_from_parsed(item))
-            if cached and cached.status in ("ok", "not_found", "failed"):
+            sk = _skeleton_from_parsed(item)
+            cached = cache_obj.get_fresh(sk, max_age_seconds=max_age_seconds)
+            if cached:
                 results.append(cached)
                 from_cache_count += 1
                 _print_progress(i, total, cached)
-                print("    ↪ cache hit")
+                age_str = ""
+                if cached.status == "ok" and cached.fetched_at:
+                    try:
+                        from datetime import datetime as _dt
+                        fetched = _dt.strptime(cached.fetched_at, "%Y-%m-%d %H:%M:%S")
+                        age_sec = (_dt.now() - fetched).total_seconds()
+                        if age_sec < 60:
+                            age_str = f", {int(age_sec)}秒前抓的"
+                        elif age_sec < 3600:
+                            age_str = f", {int(age_sec/60)}分钟前抓的"
+                        else:
+                            age_str = f", {int(age_sec/3600)}小时前抓的"
+                    except ValueError:
+                        pass
+                print(f"    ↪ cache hit{age_str}")
                 continue
 
         # 用一个空 info 做 progress 标记

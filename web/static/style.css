@@ -114,6 +114,19 @@ textarea:focus {
   gap: 6px;
   color: var(--text);
 }
+.options select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  background: #fff;
+}
+.options .hint {
+  margin: 8px 0 4px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
 
 .actions {
   display: flex;

@@ -27,6 +27,7 @@ from bilibili_tool import (
     export_all,
     parse_text,
 )
+from bilibili_tool.cache import parse_duration
 from bilibili_tool.models import VideoInfo
 
 
@@ -156,6 +157,15 @@ def _run_job(job: Job) -> None:
             timeout=float(job.options.get("timeout", 10.0)),
         )
         delay = float(job.options.get("delay", 0.5))
+        if job.options.get("no_cache"):
+            max_age_seconds = 0
+            max_age_desc = "0（不用缓存）"
+        else:
+            max_age_seconds = parse_duration(job.options.get("max_age", "1h"))
+            if max_age_seconds is None:
+                max_age_seconds = 3600
+            max_age_desc = job.options.get("max_age", "1h")
+        job.push_log(f"缓存策略: max-age = {max_age_desc}（静态字段永远，失败状态永远）")
 
         for i, p in enumerate(parsed, 1):
             sk = VideoInfo(
@@ -165,8 +175,8 @@ def _run_job(job: Job) -> None:
                 raw_input=p.raw,
             )
             if cache is not None:
-                cached = cache.get(sk)
-                if cached and cached.status in ("ok", "not_found", "failed"):
+                cached = cache.get_fresh(sk, max_age_seconds=max_age_seconds)
+                if cached:
                     job.results.append(cached)
                     job.from_cache += 1
                     job.processed += 1
@@ -174,8 +184,22 @@ def _run_job(job: Job) -> None:
                         job.ok_count += 1
                     else:
                         job.failed_count += 1
+                    age_hint = ""
+                    if cached.status == "ok" and cached.fetched_at:
+                        try:
+                            from datetime import datetime as _dt
+                            fetched = _dt.strptime(cached.fetched_at, "%Y-%m-%d %H:%M:%S")
+                            age_sec = (_dt.now() - fetched).total_seconds()
+                            if age_sec < 60:
+                                age_hint = f"（{int(age_sec)}秒前抓的）"
+                            elif age_sec < 3600:
+                                age_hint = f"（{int(age_sec/60)}分钟前抓的）"
+                            else:
+                                age_hint = f"（{int(age_sec/3600)}小时前抓的）"
+                        except ValueError:
+                            pass
                     job.push_log(
-                        f"  [{i}/{job.total}] ↪ cache {p.value} -> {cached.status}"
+                        f"  [{i}/{job.total}] ↪ cache {p.value} -> {cached.status} {age_hint}"
                     )
                     continue
 
@@ -243,6 +267,7 @@ def create_job():
         "timeout": data.get("timeout", 10.0),
         "no_cache": bool(data.get("no_cache", False)),
         "allow_bare_numbers": bool(data.get("allow_bare_numbers", False)),
+        "max_age": data.get("max_age", "1h"),
     }
     job_id = uuid.uuid4().hex[:12]
     job = Job(job_id, targets, options)

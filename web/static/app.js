@@ -112,6 +112,7 @@ async function startJob() {
     timeout: parseFloat(el("timeout").value) || 10.0,
     no_cache: el("no_cache").checked,
     allow_bare_numbers: el("allow_bare_numbers").checked,
+    max_age: el("max_age").value || "1h",
   };
 
   el("start").disabled = true;
