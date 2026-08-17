@@ -8,7 +8,7 @@ import csv
 import json
 import os
 from datetime import datetime
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
 from .models import VideoInfo
 
@@ -46,6 +46,43 @@ def _row_for_xlsx(v: VideoInfo) -> dict:
     return {label: d.get(key, "") for key, label in XLSX_COLUMNS}
 
 
+def _dedupe_key(v: VideoInfo) -> Tuple:
+    """用 (bvid, aid) 作去重主键。
+
+    - 优先 bvid（稳定、不重复）
+    - 退到 aid
+    - 再退到 raw_input
+    - 都没有就返回 None（不参与去重，会保留多份）
+    """
+    if v.bvid:
+        return ("bv", v.bvid)
+    if v.aid:
+        return ("av", v.aid)
+    if v.raw_input:
+        return ("raw", v.raw_input)
+    return None
+
+
+def dedupe_videos(videos: Iterable[VideoInfo]) -> List[VideoInfo]:
+    """按 (bvid, aid, raw_input) 去重，**保留第一次出现**的那条。
+
+    用于导出时把同一视频的多次出现合并成一行（即使抓取时 requests 列表里有重复）。
+    """
+    seen: set = set()
+    out: List[VideoInfo] = []
+    for v in videos:
+        key = _dedupe_key(v)
+        if key is None:
+            # 没 key 的兜底全部保留
+            out.append(v)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(v)
+    return out
+
+
 def save_xlsx(videos: Iterable[VideoInfo], path: str) -> str:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -67,14 +104,15 @@ def save_xlsx(videos: Iterable[VideoInfo], path: str) -> str:
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    for v in videos:
+    videos_list = list(videos)
+    for v in videos_list:
         row = _row_for_xlsx(v)
         ws.append([row[label] for _, label in XLSX_COLUMNS])
 
     # 设置列宽（简单估算）
     for col_idx, (key, label) in enumerate(XLSX_COLUMNS, 1):
         max_len = len(str(label))
-        for v in videos:
+        for v in videos_list:
             val = _row_for_xlsx(v).get(label, "")
             s = "" if val is None else str(val)
             if len(s) > max_len:
@@ -126,12 +164,12 @@ def save_txt(videos: Iterable[VideoInfo], path: str) -> str:
         f"║ 🕒 导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".ljust(62) + "║"
     )
 
-    n_total = sum(1 for _ in videos)
-    # 注意：videos 可能是 generator，这里其实在 save_txt 调用前就 list 化了
+    videos_list = list(videos)
+    n_total = len(videos_list)
     lines.append(f"║ 📊 共 {n_total} 条记录".ljust(62) + "║")
     lines.append("╚" + border + "╝\n")
 
-    for idx, v in enumerate(videos, 1):
+    for idx, v in enumerate(videos_list, 1):
         marker = "✓" if v.is_ok else "✗"
         title_disp = v.title or "(无标题)"
         lines.append(f"▶ [{idx:03d}] {marker} {title_disp}")
@@ -158,8 +196,15 @@ def export_all(
     *,
     base: str,
     out_dir: str = "output",
+    dedupe: bool = True,
 ) -> dict:
-    """一键导出 xlsx + csv + json + txt，base 是输出文件名前缀。"""
+    """一键导出 xlsx + csv + json + txt，base 是输出文件名前缀。
+
+    dedupe=True 时按 (bvid, aid, raw_input) 去重，**保留第一次**出现的。
+    dedupe=False 时保留所有（包括同一视频的多次出现）。
+    """
+    if dedupe:
+        videos = dedupe_videos(videos)
     saved = {}
     saved["xlsx"] = save_xlsx(videos, os.path.join(out_dir, f"{base}.xlsx"))
     saved["csv"] = save_csv(videos, os.path.join(out_dir, f"{base}.csv"))

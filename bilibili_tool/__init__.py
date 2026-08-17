@@ -3,7 +3,14 @@ from .models import VideoInfo, FetchSummary
 from .parser import parse_text, expand_short_urls, ParsedItem
 from .fetcher import BilibiliVideoFetcher
 from .cache import Cache
-from .exporter import save_xlsx, save_csv, save_json, save_txt, export_all
+from .exporter import (
+    save_xlsx,
+    save_csv,
+    save_json,
+    save_txt,
+    export_all,
+    dedupe_videos,
+)
 
 __all__ = [
     "VideoInfo",
@@ -18,6 +25,7 @@ __all__ = [
     "save_json",
     "save_txt",
     "export_all",
+    "dedupe_videos",
 ]
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"

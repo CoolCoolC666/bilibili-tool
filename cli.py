@@ -73,6 +73,19 @@ def main(argv=None) -> int:
         default="all",
         help="导出格式",
     )
+    out.add_argument(
+        "--dedupe",
+        dest="dedupe",
+        action="store_true",
+        default=True,
+        help="导出时按 (BV, AV) 去重，同一视频只出现一行（默认开）",
+    )
+    out.add_argument(
+        "--no-dedupe",
+        dest="dedupe",
+        action="store_false",
+        help="不去重，保留所有记录（即使同一视频出现多次）",
+    )
 
     cache = parser.add_argument_group("缓存")
     cache.add_argument("--cache", default=DEFAULT_CACHE, help="缓存文件路径")
@@ -211,19 +224,23 @@ def main(argv=None) -> int:
     saved = {}
     fmt = args.format
     if fmt == "all":
-        saved = export_all(results, base=base, out_dir=args.out_dir)
+        saved = export_all(results, base=base, out_dir=args.out_dir, dedupe=args.dedupe)
     elif fmt == "xlsx":
-        from bilibili_tool.exporter import save_xlsx
-        saved["xlsx"] = save_xlsx(results, os.path.join(args.out_dir, f"{base}.xlsx"))
+        from bilibili_tool.exporter import save_xlsx, dedupe_videos as _dedupe
+        rows = _dedupe(results) if args.dedupe else results
+        saved["xlsx"] = save_xlsx(rows, os.path.join(args.out_dir, f"{base}.xlsx"))
     elif fmt == "csv":
-        from bilibili_tool.exporter import save_csv
-        saved["csv"] = save_csv(results, os.path.join(args.out_dir, f"{base}.csv"))
+        from bilibili_tool.exporter import save_csv, dedupe_videos as _dedupe
+        rows = _dedupe(results) if args.dedupe else results
+        saved["csv"] = save_csv(rows, os.path.join(args.out_dir, f"{base}.csv"))
     elif fmt == "json":
-        from bilibili_tool.exporter import save_json
-        saved["json"] = save_json(results, os.path.join(args.out_dir, f"{base}.json"))
+        from bilibili_tool.exporter import save_json, dedupe_videos as _dedupe
+        rows = _dedupe(results) if args.dedupe else results
+        saved["json"] = save_json(rows, os.path.join(args.out_dir, f"{base}.json"))
     elif fmt == "txt":
-        from bilibili_tool.exporter import save_txt
-        saved["txt"] = save_txt(results, os.path.join(args.out_dir, f"{base}.txt"))
+        from bilibili_tool.exporter import save_txt, dedupe_videos as _dedupe
+        rows = _dedupe(results) if args.dedupe else results
+        saved["txt"] = save_txt(rows, os.path.join(args.out_dir, f"{base}.txt"))
 
     for k, v in saved.items():
         print(f"  ✓ {k}: {v}")

@@ -52,6 +52,7 @@
 - **失败也能继续**：B 站常见的 `62002 稿件不可见` / `-404 不存在` / `412 已下架` 都被归类到 `not_found`，正常导出
 - **本地 JSON 缓存**：跑过的 BV/AV 写到 `data/cache.json`，下次直接命中，不再发请求
 - **跨 AV/BV 双索引**：同一条记录同时按 BV 号和 AV 号索引，用户输入 `BV1xxx 170001`（同一视频的两种 ID）**只发 1 个请求**
+- **导出自动去重**：默认按 `(bvid, aid)` 去重，同一视频导出 xlsx/csv/json/txt 时**只占一行**。需要保留全部记录加 `--no-dedupe`
 - **智能新鲜度**：默认动态字段（播放/点赞/收藏/评论/弹幕）**1 小时**内重抓；静态字段（标题/UP主/发布时间/时长）+ 失败/失效状态**永远缓存**
 - **断点续传**：脚本中断、网断了、机器重启，下次跑同一份输入会跳过已记录的项接着抓
 - **4 种导出格式**：`xlsx`（带表头样式 + 冻结首行）/ `csv`（UTF-8 BOM，Excel 直接打开）/ `json`（带 pretty print）/ `txt`（美观的极客风）
@@ -107,6 +108,8 @@ python cli.py "BV1FpLU62EZW av170001 https://www.bilibili.com/video/BV1hy4y1B7sX
   --out-dir DIR           输出目录，默认 ./output
   --format {xlsx,csv,json,txt,all}
                           导出格式，默认 all（一次性全导出）
+  --dedupe                导出时按 (BV, AV) 去重，同一视频只出现一行（默认开）
+  --no-dedupe             不去重，保留所有记录
 
 缓存
   --cache PATH            缓存文件路径，默认 ./data/cache.json
@@ -341,6 +344,14 @@ bilibili_tool_v2/
 ---
 
 ## 📝  版本历史
+
+### v2.5.0（2026-08-17）
+
+- **新增**：导出文件支持**去重**。默认按 `(bvid, aid)` 去重，同一视频在 xlsx/csv/json/txt 里**只占一行**
+- **新增**：`--dedupe` / `--no-dedupe` CLI 开关
+- **新增**：Web UI「导出时去重」checkbox（默认勾选）
+- **新增**：`dedupe_videos()` 工具函数，可在 Python 里直接调用
+- **新增**：17 个 exporter 测试覆盖去重 + 4 种格式
 
 ### v2.4.0（2026-08-17）
 
