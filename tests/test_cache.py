@@ -185,5 +185,185 @@ class TestCachePersistence(unittest.TestCase):
         self.assertEqual(len(c.all_records()), 0)
 
 
+class TestCacheDualIndex(unittest.TestCase):
+    """核心场景：同一条记录同时有 BV 和 AV，应该按两边都索引。
+    这样用户输入 'BV1xxx 170001' 第一次跑就只发 1 个请求。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        )
+        self.tmp.close()
+        self.path = self.tmp.name
+
+    def tearDown(self):
+        if os.path.exists(self.path):
+            os.unlink(self.path)
+
+    def test_dual_index_look_up(self):
+        """存一条同时有 bvid 和 aid 的记录，用任何一种 ID 都能查到。"""
+        c = Cache(self.path)
+        record = VideoInfo(
+            input_kind="bv",
+            bvid="BV1xxx",
+            aid=170001,
+            title="测试视频",
+            up_name="up",
+            status="ok",
+            view=1000,
+            fetched_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        c.put(record)
+
+        # 用 BV 查
+        bv_query = VideoInfo(input_kind="bv", bvid="BV1xxx")
+        self.assertIsNotNone(c.get(bv_query))
+        self.assertEqual(c.get(bv_query).aid, 170001)
+
+        # 用 AV 查
+        av_query = VideoInfo(input_kind="av", aid=170001)
+        self.assertIsNotNone(c.get(av_query))
+        self.assertEqual(c.get(av_query).bvid, "BV1xxx")
+
+    def test_dual_index_preserves_both(self):
+        """put 时同时按两个 key 写。"""
+        c = Cache(self.path)
+        record = VideoInfo(
+            input_kind="bv",
+            bvid="BV1xxx",
+            aid=170001,
+            status="ok",
+            fetched_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        c.put(record)
+
+        # 内部应该有两个 key
+        self.assertIn("bv:BV1xxx", c._data)
+        self.assertIn("av:170001", c._data)
+        # 但都是同一份 dict
+        self.assertIs(c._data["bv:BV1xxx"], c._data["av:170001"])
+
+    def test_all_records_dedup(self):
+        """all_records 不会因为双索引返回重复。"""
+        c = Cache(self.path)
+        record = VideoInfo(
+            input_kind="bv",
+            bvid="BV1xxx",
+            aid=170001,
+            status="ok",
+            fetched_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        c.put(record)
+
+        # 实际只有 1 条视频
+        self.assertEqual(c.unique_count(), 1)
+        self.assertEqual(len(c.all_records()), 1)
+
+    def test_stats_dedup(self):
+        """stats 不应该把同一条记录算两遍。"""
+        c = Cache(self.path)
+        record = VideoInfo(
+            input_kind="bv",
+            bvid="BV1xxx",
+            aid=170001,
+            status="ok",
+            fetched_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        c.put(record)
+
+        stats = c.stats()
+        self.assertEqual(stats["total"], 1)
+        self.assertEqual(stats["ok"], 1)
+        self.assertEqual(stats["failed"], 0)
+
+    def test_fresh_works_for_both_keys(self):
+        """用 AV 查询时也能判断新鲜度（不只是用 BV 查的那次）。"""
+        c = Cache(self.path)
+        # 1 小时前抓的
+        old = VideoInfo(
+            input_kind="bv",
+            bvid="BV1xxx",
+            aid=170001,
+            status="ok",
+            fetched_at=(datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        c.put(old)
+
+        # 用 BV 查：max-age 1h 应该过期
+        bv_query = VideoInfo(input_kind="bv", bvid="BV1xxx")
+        self.assertIsNone(c.get_fresh(bv_query, max_age_seconds=3600))
+
+        # 用 AV 查：同样应该过期（因为是同一条记录）
+        av_query = VideoInfo(input_kind="av", aid=170001)
+        self.assertIsNone(c.get_fresh(av_query, max_age_seconds=3600))
+
+    def test_failed_status_still_dual_indexed(self):
+        """失败记录也按双索引。"""
+        c = Cache(self.path)
+        record = VideoInfo(
+            input_kind="bv",
+            bvid="BV1xxx",
+            aid=170001,
+            status="not_found",
+            api_code=62002,
+            error="稿件不可见",
+        )
+        c.put(record)
+
+        # 用任何方式查都拿得到
+        self.assertIsNotNone(c.get(VideoInfo(input_kind="bv", bvid="BV1xxx")))
+        self.assertIsNotNone(c.get(VideoInfo(input_kind="av", aid=170001)))
+
+    def test_persistence_dual_index(self):
+        """存盘后再加载，双索引仍然有效。"""
+        c1 = Cache(self.path)
+        c1.put(VideoInfo(
+            input_kind="bv",
+            bvid="BV1xxx",
+            aid=170001,
+            title="持久化测试",
+            status="ok",
+            fetched_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ))
+        c1.save()
+
+        c2 = Cache(self.path)
+        # 两个 key 都能查到
+        self.assertIsNotNone(c2.get(VideoInfo(input_kind="bv", bvid="BV1xxx")))
+        self.assertIsNotNone(c2.get(VideoInfo(input_kind="av", aid=170001)))
+        # 实际只 1 条
+        self.assertEqual(c2.unique_count(), 1)
+
+    def test_upgrade_single_index_to_dual(self):
+        """旧 cache.json 是单 key 索引，加载时自动升级为双索引。"""
+        # 模拟旧 cache：只写了 bv:BV1xxx，但 record 里有 aid=170001
+        import json as _json
+        old_cache = {
+            "bv:BV1xxx": {
+                "bvid": "BV1xxx",
+                "aid": 170001,
+                "title": "旧数据",
+                "status": "ok",
+                "view": 999,
+            }
+        }
+        with open(self.path, "w", encoding="utf-8") as f:
+            _json.dump(old_cache, f)
+
+        c = Cache(self.path)
+        # 升级后用 AV 查也能查到
+        result = c.get(VideoInfo(input_kind="av", aid=170001))
+        self.assertIsNotNone(result)
+        self.assertEqual(result.bvid, "BV1xxx")
+        self.assertEqual(result.view, 999)
+        # 实际只有 1 条
+        self.assertEqual(c.unique_count(), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
 if __name__ == "__main__":
     unittest.main()
