@@ -420,7 +420,7 @@ bilibili_tool_v2/
 
 ## 🙏  致谢
 
-- 原 `bilibili_tool.py` 和 `Python批量获取B站视频数据脚本.py` 的作者（都是映月/我自己）
+- 原 `bilibili_tool.py` 和 `Python批量获取B站视频数据脚本.py` 的作者（都是映月/我自己，这边先前利用AI工具写脚本留下的相关原代码）
 - 对于上海某高校事件 4K 修复版和hibiki相关视频的采集数据——这两份测试数据帮我验证了 80%+ 失效场景下脚本不会崩
 - B 站公开 API（`api.bilibili.com/x/web-interface/view`）
 
