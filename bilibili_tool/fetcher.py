@@ -16,6 +16,7 @@ from .parser import ParsedItem
 VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
 ARTICLE_VIEW_URL = "https://api.bilibili.com/x/article/view"  # 旧版 cv 端点
 OPUS_DETAIL_URL = "https://api.bilibili.com/x/polymer/web-dynamic/v1/opus/detail"  # v2.8.1+ 新版 opus 端点
+OPUS_HTML_FALLBACK = "https://www.bilibili.com/opus/"  # opus API 失败时降级到 web HTML
 BANGUMI_VIEW_URL = "https://api.bilibili.com/pgc/view/pc/season"
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -228,13 +229,15 @@ class BilibiliArticleFetcher:
         info.api_code = code
         if code == 0 and data.get("data"):
             if info.is_opus:
-                # opus 端点：data = {item: {...}, fallback: null}
+                # opus 端点：data = {item: {...}|null, fallback: {...}|null}
+                # 正常情况：item 是有内容的 dict
+                # 边界情况：item 是 None（被转发/已删），但 fallback 可能有指向
                 item = data["data"].get("item") if isinstance(data["data"], dict) else None
                 if item:
                     self._hydrate_opus(info, item)
                 else:
-                    info.status = "failed"
-                    info.error = "opus 响应缺少 item"
+                    # v2.8.1+：opus 失效时降级到 web HTML 拿 title
+                    self._fallback_opus_html(info)
             else:
                 # 旧版 cv 端点：data = {title, author: {mid, name}, stats: {...}, ...}
                 self._hydrate(info, data["data"])
@@ -242,6 +245,47 @@ class BilibiliArticleFetcher:
             info.status = "not_found" if code in self.NO_RETRY_CODES else "failed"
             info.error = explain_code(code)
         return info
+
+    def _fallback_opus_html(self, info: ArticleInfo) -> None:
+        """v2.8.1+ 降级策略：opus API 返回 item=null 时（被转发/已删），
+        爬 web HTML 的 <title> 拿标题。
+
+        标记 status="ok"（能拿到 title）+ error 字段写"原动态失效"提示。
+        不抛异常；HTML 失败则回退到 failed 状态。
+        """
+        url = f"{OPUS_HTML_FALLBACK}{info.cv_id}"
+        try:
+            r = self.sess.get(url, timeout=self.timeout)
+            text = r.text
+        except Exception as e:
+            info.status = "failed"
+            info.error = f"opus API + HTML 降级都失败: API item=null, HTML 错误 {e}"
+            return
+
+        # 提取 <title>，去掉 " - 哔哩哔哩" 后缀
+        import re as _re
+        m = _re.search(r"<title[^>]*>(.*?)</title>", text, _re.DOTALL)
+        if not m:
+            info.status = "failed"
+            info.error = "opus API item=null 且 HTML 无 <title>"
+            return
+        title = m.group(1).strip()
+        # 去掉常见的 " - 哔哩哔哩" 后缀
+        for suffix in (" - 哔哩哔哩", " - bilibili", " - B站"):
+            if title.endswith(suffix):
+                title = title[: -len(suffix)].strip()
+        if not title or title == "哔哩哔哩":
+            info.status = "failed"
+            info.error = "opus API item=null 且 HTML <title> 无内容"
+            return
+
+        info.status = "ok"
+        info.title = title
+        info.error = "opus API item=null（原动态失效），仅从 HTML 拿到标题"
+        # URL 仍然可用
+        if info.cv_id and not info.url:
+            info.url = f"https://www.bilibili.com/opus/{info.cv_id}"
+        info.fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def fetch_with_retry(self, target) -> ArticleInfo:
         last = self.fetch(target)

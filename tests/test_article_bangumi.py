@@ -317,6 +317,13 @@ class TestOpusSupport(unittest.TestCase):
         sk = fetcher._build_skeleton("12345")
         self.assertFalse(sk.is_opus)
 
+    def test_fetcher_has_fallback_html_method(self):
+        """v2.8.1+：_fallback_opus_html 方法存在（opus API 失败时降级）。"""
+        from bilibili_tool.fetcher import BilibiliArticleFetcher
+        fetcher = BilibiliArticleFetcher()
+        self.assertTrue(hasattr(fetcher, "_fallback_opus_html"))
+        self.assertTrue(callable(fetcher._fallback_opus_html))
+
 
 if __name__ == "__main__":
     unittest.main()
