@@ -15,16 +15,19 @@ from bilibili_tool.cache import (
     _bangumi_fingerprint,
     _bangumi_keys,
 )
-from bilibili_tool.models import ArticleInfo, BangumiInfo, VideoInfo
+from bilibili_tool.models import ArticleInfo, BangumiInfo, VideoInfo, explain_code
 
 
-def make_article(*, cv_id="cv123", status="ok", view=1000, fetched_at=None, **kw) -> ArticleInfo:
+def make_article(*, cv_id="cv123", status="ok", view=1000, fetched_at=None,
+                 is_opus=False, title=None, **kw) -> ArticleInfo:
     if fetched_at is None:
         fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if title is None:
+        title = f"article-{cv_id}"
     return ArticleInfo(
-        input_kind="article", cv_id=cv_id, title=f"article-{cv_id}",
+        input_kind="article", cv_id=cv_id, title=title,
         author_name=f"author-{cv_id}", status=status, view=view,
-        fetched_at=fetched_at, **kw,
+        fetched_at=fetched_at, is_opus=is_opus, **kw,
     )
 
 
@@ -216,6 +219,103 @@ class TestCacheBackwardCompat(unittest.TestCase):
         self.assertEqual(got.view, 999)
         got2 = c.get(VideoInfo(input_kind="av", aid=170001))
         self.assertEqual(got2.view, 999)
+
+
+class TestOpusSupport(unittest.TestCase):
+    """v2.8.1+：opus 新版专栏必须走新 API 端点（/x/polymer/web-dynamic/v1/opus/detail），
+    不能用老端点 /x/article/view（否则返回 -404 / -352）。"""
+
+    def test_article_info_is_opus_field(self):
+        """ArticleInfo 增加 is_opus 字段，默认 False。"""
+        a = make_article(cv_id="cv1")
+        self.assertFalse(a.is_opus)
+        a_opus = make_article(cv_id="988046566348554242", is_opus=True)
+        self.assertTrue(a_opus.is_opus)
+        # 序列化包含 is_opus
+        d = a_opus.to_dict()
+        self.assertTrue(d["is_opus"])
+
+    def test_article_info_opus_display_title(self):
+        """display_title 根据 is_opus 显示 opus/cv 前缀。"""
+        # title="" 强制走 fallback（fallback 才有 opus/cv 前缀）
+        a_cv = make_article(cv_id="cv1", title="")
+        self.assertIn("cv1", a_cv.display_title)
+        self.assertIn("cv", a_cv.display_title)
+        a_opus = make_article(cv_id="988046566348554242", is_opus=True, title="")
+        self.assertIn("opus", a_opus.display_title)
+        self.assertIn("988046566348554242", a_opus.display_title)
+
+    def test_explain_code_minus_352(self):
+        """v2.8.1+：-352 状态码有友好提示（风控校验失败）。"""
+        msg = explain_code(-352)
+        # 不应该是 "未知错误码"
+        self.assertNotIn("未知", msg)
+        self.assertIn("风控", msg)
+
+    def test_explain_code_minus_404_generic(self):
+        """-404 文案应该是"资源不存在"，不再说"视频不存在"（专栏/番剧也用 -404）。"""
+        msg = explain_code(-404)
+        # 关键：不再用旧的"视频不存在"文案（专栏/番剧也用 -404）
+        self.assertNotIn("视频不存在", msg)
+        # 新的"资源不存在"文案应该出现
+        self.assertIn("资源不存在", msg)
+
+    def test_explain_code_minus_509(self):
+        """-509 限流仍然有友好提示。"""
+        msg = explain_code(-509)
+        self.assertIn("频繁", msg)
+        self.assertIn("限流", msg)
+
+    def test_parsed_item_is_opus_default_false(self):
+        from bilibili_tool.parser import ParsedItem
+        p = ParsedItem(kind="article", value="12345", raw="12345")
+        self.assertFalse(p.is_opus)
+        p_opus = ParsedItem(kind="article", value="12345", raw="12345", is_opus=True)
+        self.assertTrue(p_opus.is_opus)
+
+    def test_parser_marks_opus_url(self):
+        """opus URL 必须标记 is_opus=True。"""
+        from bilibili_tool.parser import parse_text
+        items = parse_text("https://www.bilibili.com/opus/988046566348554242")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "article")
+        self.assertTrue(items[0].is_opus)
+
+    def test_parser_marks_cv_url_not_opus(self):
+        """cv URL 标记 is_opus=False。"""
+        from bilibili_tool.parser import parse_text
+        items = parse_text("https://www.bilibili.com/read/cv12345")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "article")
+        self.assertFalse(items[0].is_opus)
+
+    def test_expand_short_url_preserves_opus_flag(self):
+        """b23 短链展开后，is_opus 标志从 opus 路径传递。"""
+        from bilibili_tool.parser import parse_text, expand_short_urls
+        # b23.tv/0qnXLMe 实际跳转到 opus 路径
+        items = parse_text("https://b23.tv/0qnXLMe")
+        expanded = expand_short_urls(items)
+        # 展开后 is_opus 应为 True
+        if expanded:
+            self.assertTrue(expanded[0].is_opus)
+
+    def test_fetcher_skeleton_opus_flag_passthrough(self):
+        """BilibiliArticleFetcher._build_skeleton 透传 is_opus 标志。"""
+        from bilibili_tool.fetcher import BilibiliArticleFetcher
+        from bilibili_tool.parser import ParsedItem
+        fetcher = BilibiliArticleFetcher()
+        # 用 ParsedItem(is_opus=True) 构造
+        p = ParsedItem(kind="article", value="988046566348554242", raw="x", is_opus=True)
+        sk = fetcher._build_skeleton(p)
+        self.assertTrue(sk.is_opus)
+        self.assertEqual(sk.cv_id, "988046566348554242")
+
+    def test_fetcher_skeleton_string_default_not_opus(self):
+        """字符串输入默认 is_opus=False（旧 API 兼容）。"""
+        from bilibili_tool.fetcher import BilibiliArticleFetcher
+        fetcher = BilibiliArticleFetcher()
+        sk = fetcher._build_skeleton("12345")
+        self.assertFalse(sk.is_opus)
 
 
 if __name__ == "__main__":

@@ -39,3 +39,4 @@ cli_out.txt
 test_err.txt
 test_out.txt
 cli_v280_test*
+test_opus*.py

@@ -149,15 +149,18 @@ class Job:
             "api_code": a.api_code,
             "error": a.error,
             "cv_id": a.cv_id,
+            "is_opus": a.is_opus,
             "title": a.title,
             "author_name": a.author_name,
             "author_mid": a.author_mid,
+            "author_face": a.author_face,
             "view": a.view,
             "like": a.like,
             "coin": a.coin,
             "favorite": a.favorite,
             "share": a.share,
             "reply": a.reply,
+            "forward": a.forward,
             "words": a.words,
             "ctime": a.ctime,
             "pubtime": a.pubtime,
@@ -266,7 +269,10 @@ def _video_skeleton(p):
 
 
 def _article_skeleton(p):
-    return ArticleInfo(input_kind=p.kind, cv_id=p.value, raw_input=p.raw)
+    # v2.8.1+：透传 is_opus 标志，决定 fetcher 走哪个 API 端点
+    return ArticleInfo(
+        input_kind=p.kind, cv_id=p.value, raw_input=p.raw, is_opus=getattr(p, "is_opus", False),
+    )
 
 
 def _bangumi_skeleton(p):

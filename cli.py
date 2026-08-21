@@ -427,7 +427,11 @@ def _video_skeleton_from_parsed(item):
 
 def _article_skeleton_from_parsed(item):
     from bilibili_tool.models import ArticleInfo
-    return ArticleInfo(input_kind="article", cv_id=item.value, raw_input=item.raw)
+    # v2.8.1+：透传 is_opus 标志，决定 fetcher 走哪个 API 端点
+    return ArticleInfo(
+        input_kind="article", cv_id=item.value, raw_input=item.raw,
+        is_opus=getattr(item, "is_opus", False),
+    )
 
 
 def _bangumi_skeleton_from_parsed(item):
