@@ -324,6 +324,65 @@ class TestOpusSupport(unittest.TestCase):
         self.assertTrue(hasattr(fetcher, "_fallback_opus_html"))
         self.assertTrue(callable(fetcher._fallback_opus_html))
 
+    def test_article_info_is_only_fans_field(self):
+        """v2.8.1+：ArticleInfo 增加 is_only_fans 字段，默认 False。"""
+        a = make_article(cv_id="cv1")
+        self.assertFalse(a.is_only_fans)
+        d = a.to_dict()
+        self.assertIn("is_only_fans", d)
+        self.assertFalse(d["is_only_fans"])
+
+    def test_article_info_is_only_fans_setter(self):
+        """is_only_fans 字段可以被设置。"""
+        a = make_article(cv_id="cv1", is_only_fans=True)
+        self.assertTrue(a.is_only_fans)
+        d = a.to_dict()
+        self.assertTrue(d["is_only_fans"])
+
+    def test_article_fetcher_hydrate_opus_recognizes_only_fans(self):
+        """_hydrate_opus 识别 basic.is_only_fans 字段。"""
+        from bilibili_tool.fetcher import BilibiliArticleFetcher
+        from bilibili_tool.models import ArticleInfo
+        fetcher = BilibiliArticleFetcher()
+        a = ArticleInfo(input_kind="article", cv_id="12345", is_opus=True)
+        # 模拟 opus 响应：basic.is_only_fans = True
+        item = {
+            "id_str": "12345",
+            "type": 1,
+            "basic": {
+                "title": "测试仅粉丝可见",
+                "uid": "100",
+                "is_only_fans": True,  # 关键
+            },
+            "modules": [],
+        }
+        fetcher._hydrate_opus(a, item)
+        self.assertTrue(a.is_only_fans)
+        self.assertEqual(a.title, "测试仅粉丝可见")
+        # error 字段应该标记"仅粉丝可见"
+        self.assertIn("仅粉丝可见", a.error)
+
+    def test_article_fetcher_hydrate_opus_default_no_only_fans(self):
+        """_hydrate_opus 默认 is_only_fans=False。"""
+        from bilibili_tool.fetcher import BilibiliArticleFetcher
+        from bilibili_tool.models import ArticleInfo
+        fetcher = BilibiliArticleFetcher()
+        a = ArticleInfo(input_kind="article", cv_id="12345", is_opus=True)
+        item = {
+            "id_str": "12345",
+            "basic": {
+                "title": "公开专栏",
+                "uid": "100",
+                # 缺 is_only_fans 字段
+            },
+            "modules": [],
+        }
+        fetcher._hydrate_opus(a, item)
+        self.assertFalse(a.is_only_fans)
+        self.assertEqual(a.title, "公开专栏")
+        # 默认无 error
+        self.assertNotIn("仅粉丝可见", a.error)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,3 +41,4 @@ test_out.txt
 cli_v280_test*
 test_opus*.py
 test_fallback*.py
+test_onlyfans.py

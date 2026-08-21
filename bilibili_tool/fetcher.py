@@ -422,10 +422,19 @@ class BilibiliArticleFetcher:
             except (TypeError, ValueError):
                 author_mid = None
 
+        # v2.8.1+：识别"仅粉丝可见"标志
+        # basic.is_only_fans 字段：True = up 主设置了仅粉丝可见
+        is_only_fans = bool(basic.get("is_only_fans", False))
+        info.is_only_fans = is_only_fans
+
         info.title = title
         info.author_name = author_name
         info.author_mid = author_mid
         info.author_face = author_face
+
+        # 仅粉丝可见时：error 字段标记（让用户知道是权限限制不是失败）
+        if is_only_fans and not info.error:
+            info.error = "up 主设置仅粉丝可见（匿名访问看不到完整内容）"
 
         # 统计字段映射
         info.like = stat_counts.get("like")

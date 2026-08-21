@@ -112,6 +112,9 @@ class ArticleInfo:
     # v2.8.1+：区分 cv 旧版 / opus 新版
     is_opus: bool = False  # True = opus 形式，走新端点
 
+    # v2.8.1+：B 站"仅粉丝可见"标志（opus 端点在 basic.is_only_fans 暴露）
+    is_only_fans: bool = False  # True = up 主设置仅粉丝可见（匿名访问看不到完整内容）
+
     # 基础信息
     title: str = ""
     author_mid: Optional[int] = None

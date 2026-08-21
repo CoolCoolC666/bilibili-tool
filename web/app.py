@@ -150,6 +150,7 @@ class Job:
             "error": a.error,
             "cv_id": a.cv_id,
             "is_opus": a.is_opus,
+            "is_only_fans": a.is_only_fans,
             "title": a.title,
             "author_name": a.author_name,
             "author_mid": a.author_mid,
