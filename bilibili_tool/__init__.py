@@ -1,7 +1,8 @@
-"""bilibili_tool: 多输入 + 缓存 + 断点续传 的 B 站信息抓取工具（视频 / 专栏 / 番剧）。"""
+"""bilibili_tool: 多输入 + 缓存 + 断点续传 的 B 站信息抓取工具（视频 / 专栏 / 番剧 / UP 主）。"""
 from .models import ArticleInfo, BangumiInfo, FetchSummary, VideoInfo
 from .parser import parse_text, expand_short_urls, ParsedItem
 from .fetcher import BilibiliArticleFetcher, BilibiliBangumiFetcher, BilibiliVideoFetcher
+from .author import AuthorVideoFetcher
 from .cache import Cache
 from .exporter import (
     save_xlsx,
@@ -37,6 +38,7 @@ __all__ = [
     "BilibiliVideoFetcher",
     "BilibiliArticleFetcher",
     "BilibiliBangumiFetcher",
+    "AuthorVideoFetcher",  # v2.9.0+
     # cache
     "Cache",
     # exporter
@@ -59,4 +61,4 @@ __all__ = [
     "filter_valid",
 ]
 
-__version__ = "2.8.0"
+__version__ = "2.9.0-alpha"

@@ -18,6 +18,7 @@ import time
 from datetime import datetime
 
 from bilibili_tool import (
+    AuthorVideoFetcher,
     BilibiliArticleFetcher,
     BilibiliBangumiFetcher,
     BilibiliVideoFetcher,
@@ -142,6 +143,55 @@ def main(argv=None) -> int:
         help="跳过番剧抓取（只处理视频和专栏）",
     )
 
+    # v2.9.0+：按 UP 主 UID 批量抓取
+    author = parser.add_argument_group("按 UP 主抓取（v2.9.0+ 新增）")
+    author.add_argument(
+        "--from-up",
+        type=int,
+        default=None,
+        metavar="UID",
+        help=(
+            "按 UP 主 UID（mid）抓取其所有投稿视频。\n"
+            "配合 --days / --max / --since / --until 使用。\n"
+            "例：--from-up 3546672833497872 --days 7"
+        ),
+    )
+    author.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "配合 --from-up 使用：抓最近 N 天的投稿（默认 7）。\n"
+            "例如：--from-up 3546672833497872 --days 30 表示最近 30 天"
+        ),
+    )
+    author.add_argument(
+        "--max",
+        type=int,
+        default=None,
+        metavar="M",
+        help="配合 --from-up 使用：最多抓多少条（默认不限）",
+    )
+    author.add_argument(
+        "--since",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=(
+            "配合 --from-up 使用：起始日期（包含）。\n"
+            "例如：--since 2026-08-01 表示从 8 月 1 日开始\n"
+            "优先级：--since > --days"
+        ),
+    )
+    author.add_argument(
+        "--until",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="配合 --from-up 使用：结束日期（不包含）",
+    )
+
     cache = parser.add_argument_group("缓存")
     cache.add_argument("--cache", default=DEFAULT_CACHE, help="视频缓存文件路径")
     cache.add_argument("--cache-article", default=DEFAULT_CACHE_ARTICLE, help="专栏缓存文件路径")
@@ -182,6 +232,40 @@ def main(argv=None) -> int:
     # 1) 解析输入
     raw_text = _read_targets(args)
     parsed = parse_text(raw_text, allow_bare_numbers=args.allow_bare_numbers)
+
+    # 1b) v2.9.0+：按 UP 主 UID 抓取（如果给了 --from-up）
+    if args.from_up:
+        from bilibili_tool.author import AuthorVideoFetcher
+        from datetime import datetime as _dt
+        since_dt = None
+        until_dt = None
+        if args.since:
+            try:
+                since_dt = _dt.strptime(args.since, "%Y-%m-%d")
+            except ValueError:
+                print(f"[!] --since 格式错误：{args.since!r}，应为 YYYY-MM-DD")
+                return 1
+        if args.until:
+            try:
+                until_dt = _dt.strptime(args.until, "%Y-%m-%d")
+            except ValueError:
+                print(f"[!] --until 格式错误：{args.until!r}，应为 YYYY-MM-DD")
+                return 1
+        days = args.days if args.days is not None else (7 if since_dt is None else None)
+        print(f"\n🎯 按 UP 主 UID 抓取：mid={args.from_up}, days={days}, max={args.max}, since={args.since}, until={args.until}")
+        try:
+            af = AuthorVideoFetcher(timeout=args.timeout)
+            author_items = af.fetch_author_videos(
+                args.from_up, days=days, max_count=args.max,
+                since=since_dt, until=until_dt,
+            )
+            print(f"   抓取到 {len(author_items)} 个视频")
+        except Exception as e:
+            print(f"[!] 按 UP 主抓取失败：{e}")
+            return 1
+        # 合并到 parsed
+        parsed = (parsed or []) + author_items
+
     if not parsed:
         hint = ""
         if not args.allow_bare_numbers:
