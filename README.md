@@ -1,12 +1,12 @@
-# 🎬  B 站信息抓取工具 v2.8（视频 / 专栏 / 番剧）
+# 🎬  B 站信息抓取工具 v3.0.9-alpha（视频 / 专栏 / 番剧 + 按 UP 主抓取）
 
 > 把一堆 **VIDEO 视频** / **ARTICLE 专栏** / **BANGUMI 番剧** 的 ID 或链接一次性丢进去，自动按类型分类 + 抓取，整理成 xlsx / csv / json / txt 四种格式。带本地缓存 + 断点续传，命令行和 Web 两种入口。
+>
+> **v3.0+ 新增**：按 UP 主批量抓取（`/author` 页面）+ 4 套可切换数据源（**自主 WBI / uapis.cn / 旧端点 / 自动降级链**）+ 翻页间隔自定义。
 
-**v2.8 新增**：支持抓取**专栏（read/cv + opus）**和**番剧（ss + ep）**，跟视频一样支持短链展开、缓存、去重。
-
-| 🎬 VIDEO 视频 | 📝 ARTICLE 专栏 | 🎬 BANGUMI 番剧 |
-|:---:|:---:|:---:|
-| BV / av / URL / 短链 | read/cv + opus + 短链 | ss / ep + 短链 |
+| 🎬 VIDEO 视频 | 📝 ARTICLE 专栏 | 🎬 BANGUMI 番剧 | 🆕 按 UP 主抓取（v3.0+） |
+|:---:|:---:|:---:|:---:|
+| BV / av / URL / 短链 | read/cv + opus + 短链 | ss / ep + 短链 | UID / space 链接 / 短链 → 阶段 1 列表 + 阶段 2 详情 |
 
 ---
 > ## ⚠️ 使用限制
@@ -42,6 +42,64 @@
    - 把一堆 **视频 / 专栏 / 番剧** ID 或链接粘贴到文本框（每行一个、空格分开都行）
    - 点「开始抓取」
    - 等跑完，右上角下载按钮点哪个下哪个（**类型名直接显示在文件名里**，详见下方"下载文件类型"）
+   - **v3.0+ 想按 UP 主批量抓？** 直接点顶部导航的「按 UP 主抓取」（`/author`），详见下方 v3.0+ 新功能专区
+
+---
+
+## 🚀 v3.0+ 新功能专区（按 UP 主批量抓 + 数据源切换）
+
+> **一句话**：除了原来"按 ID 抓"模式，v3.0+ 还支持"按 UP 主 UID 抓该 UP 的全部投稿"。**数据源可切**（自主 WBI / uapis.cn / 旧端点 / 自动降级链），避开 B 站风控。
+
+### 入口
+
+```
+http://127.0.0.1:5050/author    ← 启动 Web 后访问这个路径
+```
+
+### 流程
+
+```
+阶段 1：拉 UP 主视频列表（UID/链接/短链 → CSV）
+   ↓
+阶段 2：从 CSV 抓每条视频详情（XLSX）
+```
+
+两阶段都支持批量、实时进度、文件管理（删除 / 打开 / 批量删除）。
+
+### 4 套数据源（v3.0+ 关键新功能）
+
+| 数据源 | 是否需要 key | QPS | 特点 | 适用 |
+|---|---|---|---|---|
+| **uapis.cn**（默认）| 可选（访客免 key）| 访客 4 / 登录 7 | 国产第三方 + 5 端点 + 访客 1500 积分/月 | **首选**：风控少、积分便宜 |
+| **self-wbi** | 不需要 | 0（受 B 站风控）| 自主 WBI 签名调用 B 站官方端点 | 网络好 + B 站不限流时 |
+| **self-legacy** | 不需要 | 0（受 B 站风控）| 旧端点（无 WBI）| 仅最末位降级 |
+| **自动降级链** | — | — | 优先 self-wbi → uapis 访客 → self-legacy | **默认**：自动选最稳的 |
+
+**降级链逻辑**：所选 provider 限流（uapis 429 / B 站 -799）时**自动切换到下一个 provider**。其他错误（鉴权 / 资源不存在 / 网络）直接抛，不降级。
+
+### ⏱ 翻页请求间隔自定义（v3.0.9+）
+
+> **新功能**：在「⚙ 数据源设置」卡片可以**手动设置翻页间隔**（毫秒），避开 429 / 月度额度过快耗尽。
+
+| 推荐场景 | 间隔 |
+|---|---|
+| uapis 访客 + 日常抓取 | **250ms**（默认 = 4 QPS）|
+| uapis 访客 + 保守抓取 | **1500ms**（FAQ Q15 推荐）|
+| uapis 访客 + 429 频发 | **2000-4000ms**（Q14 退避）|
+| uapis 登录 + 高速抓 | **142ms**（7 QPS）|
+| 自测 / 调试 | **0ms**（不 sleep）|
+
+依据：uapis FAQ Q13（QPS 表）/ Q14（429 退避 0.5/1/2/4s）/ Q15（≥1500ms 保守）。
+
+### 🆕 还有什么 v3.0+ 才有的能力？
+
+- **UP 主主页信息批量抓取**（`/api/author/profile`）：一次抓多个 UP 主的昵称 / 等级 / 粉丝数 / 投稿数，导出 CSV + XLSX
+- **数据完整性提示**：uapis 数据不是 100% 完整时（如老 UP 主只能拿 50-60%），结果页会标"⚠ 数据可能不完整"
+- **另存按钮**（v3.0.8+）：用 File System Access API 弹文件选择器，**不弹浏览器"另存为"**（Chrome/Edge 86+）
+- **在文件管理器中打开**（v3.0.7+）：智能定位（CSV → `output/`，XLSX → `output/xlsx/`）+ 高亮文件
+- **批量删除**（v3.0.2+）：通配符 `*` / `?` / `[seq]` 一次清多个测试残留
+- **日期快捷按钮**（v3.0.3+）：近 7/30/90 天 / 全部时间，4 个预设一键
+- **实时进度**（v3.0.4+）：后台线程 + 前端 0.6s 轮询，看得见在抓哪个
 
 ---
 
@@ -103,6 +161,8 @@ output/
 
 ## ✨ 特性
 
+### 按 ID 抓（v2.x 老能力）
+
 - **🎬 三类内容支持（v2.8+）**：**VIDEO 视频**（AV/BV/URL/短链）+ **📝 ARTICLE 专栏**（read/cv + opus）+ **🎬 BANGUMI 番剧**（ss + ep）。混在一段文本里也能自动按出现顺序解析 + 去重
 - **b23 短链自动分类**：粘贴 `b23.tv/xxxxxx`，自动跟随 302 跳转识别属于视频/专栏/番剧中的哪一类
 - **失败也能继续**：B 站常见的 `62002 稿件不可见` / `-404 不存在` / `412 已下架` / `-509 限流` 都被归类到 `not_found`，正常导出
@@ -116,6 +176,24 @@ output/
 - **4 种导出格式 + 3 sheet xlsx（v2.8+）**：`xlsx`（带表头样式 + 冻结首行 + 3 sheet 视频/专栏/番剧）/ `csv`（UTF-8 BOM，Excel 直接打开）/ `json`（带 pretty print）/ `txt`（美观的极客风）。**每种类型单独成文件**（`*_video.csv` / `*_article.csv` / `*_bangumi.csv`）
 - **零 pandas 依赖**：xlsx 走纯 openpyxl，环境更精简，不会再撞 numpy 兼容性问题
 - **三种入口**：Python 模块 / CLI 命令 / Web 页面，按需选择
+
+### 按 UP 主抓（v3.0+ 新能力）
+
+- **🆕 按 UP 主 UID 批量抓**：阶段 1 拉列表（→ CSV）→ 阶段 2 抓详情（→ XLSX）。**支持多 UP 主批量 + 多 CSV 批量**
+- **🆕 4 套数据源切换**：
+  - **uapis.cn**（默认）：访客 4 QPS / 登录 7 QPS，中文文档 + 5 端点 + 15 分钟缓存
+  - **self-wbi**：自主 WBI 签名调用 B 站官方端点（v2.9.1+），免费但受 B 站风控
+  - **self-legacy**：旧端点（无 WBI），最末位降级
+  - **自动降级链**：限流（uapis 429 / B 站 -799）时自动切到下一个 provider，其他错误直接抛
+- **🆕 API key 只存 localStorage**（不上传服务器）：明文存浏览器，**用户隐私可控**
+- **🆕 翻页间隔自定义（v3.0.9+）**：在「数据源设置」卡片手动设置毫秒值，避开 429。**默认 250ms = 4 QPS**（uapis 访客档）
+- **🆕 数据完整性提示**：uapis 数据不是 100% 时（如老 UP 主只能拿 50-60%），结果页标 "⚠ 数据可能不完整"
+- **🆕 UP 主主页信息批量抓**（v3.0.6+）：一次抓多个 UP 主的昵称/等级/粉丝数/投稿数，导出 CSV + XLSX
+- **🆕 实时进度**（v3.0.4+）：异步任务 + 前端 0.6s 轮询，看得见在抓哪个
+- **🆕 另存按钮**（v3.0.8+）：用 File System Access API 弹文件选择器，不弹浏览器"另存为"（Chrome/Edge 86+）
+- **🆕 在文件管理器中打开**（v3.0.7+）：智能定位（CSV → `output/`，XLSX → `output/xlsx/`）+ 高亮文件
+- **🆕 批量删除**（v3.0.2+）：通配符 `*` / `?` / `[seq]` 一次清多个测试残留
+- **🆕 日期快捷按钮**（v3.0.3+）：近 7/30/90 天 / 全部时间
 
 ---
 
@@ -335,6 +413,59 @@ python run_web.py --host 0.0.0.0 --port 5050
 
 ⚠ **生产环境请勿用 Flask 自带 dev server**，加并发建议换 `gunicorn -w 4 'web.app:app'`。
 
+### v3.0+ 按 UP 主抓取（`/author` 页面）
+
+> 启动 Web 后访问 `http://127.0.0.1:5050/author`，或者点首页顶部导航的「按 UP 主抓取」。
+
+页面长这样（ASCII 示意）：
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  📋 按 UP 主抓取视频（v3.0+ UAPI 集成）                          │
+├──────────────────────────────────────────────────────────────────┤
+│  ⚙ 数据源设置  自主 WBI / uapis.cn（访客或登录）/ 旧端点            │
+│    数据源 [uapis.cn ▼]  API Key [*********]  请求间隔 [250]ms     │
+│    ⏱ 推荐翻页间隔：250ms（4 QPS = 访客档）                         │
+│    ⚠ 风险提示：数据过第三方服务器（UID 暴露）· 访客按 IP 算额度... │
+├──────────────────────────────────────────────────────────────────┤
+│  ① 阶段 1：拉取 UP 主视频列表                                    │
+│    ┌────────────────────────────────────────────────┐            │
+│    │ 53456                                           │            │
+│    │ https://space.bilibili.com/483307278             │            │
+│    │ https://b23.tv/3VlfaxC                          │            │
+│    └────────────────────────────────────────────────┘            │
+│    [近 7 天] [近 30 天] [近 90 天] [📅 全部时间]                  │
+│    [拉取列表 → 导出 CSV]                                          │
+│    → UP 53456：261 条（来源：uapis.cn）→ author_53456_xxx.csv   │
+├──────────────────────────────────────────────────────────────────┤
+│  ② 阶段 2：从 CSV 抓取视频详情                                    │
+│    [今天] author_53456_xxx.csv (1.2 KB)                          │
+│    [昨天] author_483307278_xxx.csv (3.4 KB)                       │
+│    [✓ 全选] [✗ 全不选] [🗑 删除选中] [📂 在文件管理器中打开]     │
+│    [抓取详情 → 导出 XLSX]  → output/xlsx/author_detail_53456.xlsx│
+├──────────────────────────────────────────────────────────────────┤
+│  ③ UP 主主页信息批量抓取（v3.0.6+ · uapis.cn 专属）             │
+│    ┌────────────────────────────────────────────────┐            │
+│    │ 53456                                            │            │
+│    │ https://space.bilibili.com/483307278              │            │
+│    └────────────────────────────────────────────────┘            │
+│    [批量抓取主页 → 导出 CSV + XLSX]                              │
+│    → profiles_xxx.csv + profiles_xxx.xlsx                         │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**关键端点**（v3.0+ 实现的 7 个）：
+
+| 端点 | 方法 | 用途 |
+|---|---|---|
+| `/api/author/providers` | GET | 返回 3 个 provider 元信息（QPS / 积分 / 风险 / **推荐间隔**）|
+| `/api/author/list` | POST | 阶段 1：拉列表 + 导出 CSV（接 provider / key / days / **interval_ms**）|
+| `/api/author/profile` | POST | 阶段 3：批量抓 UP 主主页信息（v3.0.6+）|
+| `/api/author/detail` | POST | 阶段 2（单文件）：异步抓详情 + 实时进度（v3.0.4+）|
+| `/api/author/detail/batch` | POST | 阶段 2（批量）：多 CSV 并行抓详情（v3.0.7+）|
+| `/api/author/detail/progress` | GET | 阶段 2 进度轮询（兼容单/批量）|
+| `/api/open-output-folder` | POST | 在文件管理器中打开 + 高亮（v3.0.7+ 智能定位）|
+
 ---
 
 ## 🧪  测试
@@ -345,11 +476,17 @@ python run_web.py --host 0.0.0.0 --port 5050
 python -m unittest discover tests -v
 ```
 
-**118 个测试**，覆盖：
+**323 个测试**，覆盖：
 - `tests/test_parser.py`（25 个）：纯 AV / av 前缀 / BV / 完整 URL / 短链 / 混合输入 / 多行 / 中文混入 / URL 内嵌 av 数字不重复 / 顺序保持 / 去重 / 科学记数法 / 6-16 位裸数字边界 / 版权清单回归 / 33 个真实 AV 号回归 / **专栏/番剧/opus URL 解析**（v2.8+ 13 个新增）
 - `tests/test_cache.py`（23 个）：parse_duration / 字段差异化过期 / 失败状态永远新鲜 / 缺失 fetched_at 视为过期 / 持久化 / 损坏 cache 恢复 / **跨 AV/BV 双索引 + 自动升级**
 - `tests/test_exporter.py`（26 个）：CSV/JSON/TXT/XLSX 4 种格式 / dedupe 各种边界 / 先过滤后去重 / **3 类型混合导出 + 3 sheet xlsx**（v2.8+ 13 个新增）
 - `tests/test_article_bangumi.py`（18 个，v2.8 新增）：通用 Cache 对 ArticleInfo/BangumiInfo 的支持 / 双索引（ss+ep）/ 持久化 / 旧 API 兼容
+- `tests/test_wbi.py`（25 个，v2.9.1 新增）：WBI 签名 / 缓存 / enc_wbi / 32 个测试点
+- `tests/test_author.py`（v2.9.1+）：`AuthorVideoFetcher` 抓 UP 主投稿
+- `tests/test_author_list.py` / `tests/test_author_detail.py`（v2.9.0+）：按 UP 主列表 / 详情抓取
+- `tests/test_uapi_*.py`（3 个，v2.10.0+）：uapis.cn / self-wbi / chain 降级 56 测试
+- **`tests/test_uapi_interval.py`（25 个，v3.0.9 新增）**：provider 翻页 sleep 行为 / 4 个 provider 默认值 / interval=0 / 负数修正 / 翻页次数
+- **`tests/test_web_interval.py`（11 个，v3.0.9 新增）**：4 个 web 端点透传 interval_ms / provider 元信息 / 边界值
 
 ### 真实数据验证（用同目录的 `../测试数据/`）
 
@@ -383,20 +520,50 @@ python -m unittest discover tests -v
 ```
 bilibili_tool_v2/
 ├── bilibili_tool/            # 核心库
-│   ├── __init__.py
+│   ├── __init__.py           # 版本号 v3.0.9-alpha
 │   ├── models.py             # 数据模型（dataclass）
 │   ├── parser.py             # 多输入解析
 │   ├── fetcher.py            # B 站 API 客户端
 │   ├── cache.py              # JSON 缓存 + 原子写入
-│   └── exporter.py           # xlsx / csv / json / txt
+│   ├── exporter.py           # xlsx / csv / json / txt
+│   ├── wbi.py                # v2.9.1+ WBI 签名（25 测试）
+│   ├── author.py             # v2.9.1+ AuthorVideoFetcher（WBI 主端点）
+│   ├── author_list.py        # v2.9.0+ 按 UP 主列表抓取 + CSV 导出（v3.0+ archives= 参数）
+│   ├── author_detail.py      # v2.9.0+ 按 UP 主详情抓取 + XLSX 导出（v3.0.1+ 默认 output/xlsx/）
+│   └── uapi/                 # v2.10.0+ UAPI 抽象层
+│       ├── __init__.py       # 导出 ArchiveProvider/AuthorArchiveChain
+│       ├── base.py           # 5 类异常 + ArchiveProvider 基类（v3.0.9+ interval_ms）
+│       ├── uapis_cn.py       # uapis.cn 5 端点（访客 4 QPS / 登录 7 QPS）
+│       ├── self_wbi.py       # 适配 AuthorVideoFetcher
+│       ├── self_legacy.py    # 旧端点（最末位降级）
+│       └── chain.py          # 降级链（v3.0.5+ 完整性评估 + v3.0.9+ interval 透传）
 ├── web/                      # Web 应用
-│   ├── app.py                # Flask + SSE
-│   ├── templates/index.html
-│   └── static/{style.css,app.js}
-├── tests/
-│   └── test_parser.py
-├── data/cache.json           # 缓存（自动生成，gitignore）
+│   ├── app.py                # Flask + SSE + v3.0+ 7 个 author 端点
+│   ├── templates/
+│   │   ├── index.html        # 视频/专栏/番剧主页
+│   │   └── author.html       # v3.0+ 按 UP 主抓取页
+│   └── static/
+│       ├── {style.css, app.js, author.js}  # author.js v3.0+ 数据源卡 / 进度轮询
+├── tests/                    # 323 个测试
+│   ├── test_parser.py
+│   ├── test_cache.py
+│   ├── test_exporter.py
+│   ├── test_article_bangumi.py
+│   ├── test_wbi.py           # v2.9.1+
+│   ├── test_author.py        # v2.9.1+
+│   ├── test_author_list.py
+│   ├── test_author_detail.py
+│   ├── test_uapi_*.py        # v2.10.0+ UAPI 抽象层（56 测试）
+│   ├── test_uapi_interval.py # v3.0.9+ 翻页间隔（25 测试）
+│   └── test_web_interval.py  # v3.0.9+ web 端点（11 测试）
+├── data/                     # 缓存（自动生成，gitignore）
+│   ├── cache.json            # 视频
+│   ├── cache_article.json    # 专栏
+│   ├── cache_bangumi.json    # 番剧
+│   └── wbi_keys.json         # v2.9.1+ WBI 签名 key（12h 自动刷新）
 ├── output/                   # 导出目录（自动生成，gitignore）
+│   ├── *.csv / *.json / *.txt / *.xlsx
+│   └── xlsx/                 # v3.0.1+ 详情 XLSX 单独目录
 ├── cli.py                    # CLI 入口
 ├── run_web.py                # Web 启动
 ├── requirements.txt
@@ -409,6 +576,8 @@ bilibili_tool_v2/
 
 ## ⚠️  已知限制
 
+### 按 ID 抓（v2.x）
+
 - **频率限制**：连续大量请求可能触发 B 站风控。`--delay` 默认 0.6s 比较保守；如果跑 100+ 个视频可以调到 1.0s 稳一点
 - **短链解析**：b23.tv 短链需要先发一次 HEAD 请求才能展开，会多一次网络往返
 - **专栏正文**：抓专栏正文（`/x/article/detail/content`）需要登录 cookie，本版本**只抓公开字段**（标题/作者/阅读量/点赞/收藏/摘要/封面）。如需正文请加 SESSDATA cookie（v2.8.1+ 计划）
@@ -420,10 +589,57 @@ bilibili_tool_v2/
   - **被转发的内容**：opus API 返回 `item=null, fallback={type:2, id: 原动态id}`。本版本会**降级到 web HTML 拿 `<title>`**（status=ok + error 字段标记降级原因）
   - **仅粉丝可见**：`ArticleInfo.is_only_fans=True` 时 error 字段会写"up 主设置仅粉丝可见（匿名访问看不到完整内容）"——这是 B 站权限限制，不是工具 bug
 
+### 按 UP 主抓（v3.0+）
+
+- **uapis.cn 数据完整性**（按 UP 主 + 时间窗口变，**不是硬限制**）：
+  - 活跃 UP 主（1751577265）：~900/983（91.5%）
+  - 老 UP 主（53456）：~140-160/262（53-61%）
+  - 2019 年前数据视 UP 主而定（Warma 缺 2015-2018）
+  - **不是 150 条硬限制**——是"动态"，4 QPS 间隔够慢时上限 ≈ 1000；太快被限速
+- **B 站风控（self-wbi / self-legacy）**：当前网络环境下 self-wbi 经常被 412 / -799 屏蔽。**默认走 uapis 降级链**
+- **uapis 访客额度按 IP 算**：切网络会重置；多人共用 IP 可能争抢
+- **v3.0.9 翻页间隔是全局值**：不能分端点或分 UP 主。429 没有自动退避（v3.1+ 候选）
+- **没有 429 自动退避**：用户需手动调大 interval（FAQ Q14 推荐 0.5s/1s/2s/4s 指数退避）
+- **CSV 大小限制**：阶段 2 单文件按行读（不一次性加载），但 5000+ 行的 CSV 仍可能慢
+
+#### ⚠ 截断 + 服务端缓存陷阱（v3.0.9+ 诊断经验）
+
+> **2026-08-21 用户现场确认**：uapis.cn 在请求被**中途截断**时，会让**下一次相同参数的请求**拿到**上次截断时的不完整缓存结果**。**实测症状**："测不出全量" + "全量数据与 25 年一模一样"——其实是拿到的**被截断的冻结版本**。
+
+**典型场景**：
+1. 浏览器关掉、用户点停、timeout、网络抖动 → 当前请求被截断
+2. 服务端（uapis）请求**没收到完整响应**，但**已经写入了缓存**（15 分钟 TTL）
+3. 用户立即用**同样的参数**重试 → uapis 直接返回**上次的（不完整）缓存**
+4. 结果：拿到的数据**不是新的全量**，而是**上次的残缺版本**，且**看起来"成功"**
+
+**诊断信号**：
+- 同一个 UP 主反复跑，每次拿到的数据量**不一致**（如 140 → 165 → 158）
+- 反复重试时**响应很快**（命中缓存）但**数据没变多**
+- 数据有"时间分块"特征（如老 UP 主缺 2015-2018，每次都缺同几个月）
+- 关掉网络 15 分钟后再试，结果变了
+
+**FAQ 引用（Q12 关闭缓存）**：
+> TypeScript SDK 用 `disableCache: true`；非 SDK 在 URL 加 `_t=Date.now()` 时间戳绕过。
+
+**目前的工作绕**（v3.0.9）：
+- **等待 15 分钟**让 uapis 缓存自然过期（最慢但最稳）
+- **修改任一参数**（如把 days=7 改成 days=8）让缓存键变了
+- **v3.1+ 候选**：实现 `disable_cache=true` 参数，给所有 uapis URL 加 `_t=<timestamp>` 后缀强制绕过缓存
+
+**为什么 interval_ms 解决不了这个**：interval 控制**翻页间隔**避开 429；截断是**单次请求**的连接中断，跟间隔无关。
+
 ---
 
 ## 🗺  后续计划（AI工具的建议，这边我可能会维护的）
 
+### v3.1+ 候选（v3.0+ 已实装的）
+- [ ] **`disable_cache` 绕过截断陷阱**（uapis FAQ Q12）：给所有 uapis URL 加 `_t=<timestamp>` 后缀强制绕过缓存，**修复"截断 → 下次请求拿到上次残缺缓存"** 的隐蔽 bug
+- [ ] **429 自动退避**（uapis FAQ Q14）：触发指数退避 0.5s/1s/2s/4s
+- [ ] **按 UP 主维度动态调间隔**：活跃 UP 主慢 / 老 UP 主快
+- [ ] **interval_ms 服务端持久化**：多端共享
+- [ ] **智能推荐**：根据"过去 10 分钟 429 次数"自动调大 interval
+
+### v2.x 计划
 - [ ] 加 `seeduuid` cookie 支持（绕过部分风控 + 看会员视频）
 - [ ] 加 `--from-xlsx` 选项，从现有表格的 BV 列直接读输入
 - [ ] 加 `--merge` 选项，把新抓的字段填回原 xlsx 的"真实"列，保留"原始"列做对比
@@ -433,6 +649,113 @@ bilibili_tool_v2/
 ---
 
 ## 📝  版本历史
+
+### v3.0.9-alpha（2026-08-21）—— **请求间隔自定义**
+
+**核心新功能**：
+- **🆕 翻页间隔自定义**：在「数据源设置」卡片手动设置毫秒值，全局生效（4 个 web 端点 + 3 个 provider）
+- **默认 250ms**（uapis 访客 4 QPS = 1000/4）
+- **默认分档**：
+  - uapis.cn: 250ms（4 QPS 访客档）
+  - self-wbi: 300ms（保留旧 `time.sleep(0.3)` 行为）
+  - self-legacy: 250ms（与 uapis 对齐）
+- **provider 元信息加 `recommended_interval_ms`**：`/api/author/providers` 返回的元信息含推荐值，切 provider 时前端展示
+- **响应回显 interval_ms**：每个端点响应都带 `interval_ms`，前端可显示"用了 X ms"
+
+**实施 4 层透传**：
+1. 前端 localStorage `bilibili_tool:uapi_interval_ms`
+2. Web 4 端点接 `interval_ms`（默认 250，负数 clamp 到 0）
+3. Provider 层 `ArchiveProvider.__init__` 统一加 + `_sleep_interval()` 方法
+4. 翻页点 `uapis_cn` / `self_legacy` / `AuthorVideoFetcher._iter_author_archives` 在 `pn += 1` 后调用
+
+**文档依据**：uapis FAQ Q13（QPS 表）/ Q14（429 退避 0.5/1/2/4s）/ Q15（≥1500ms 保守）
+
+**测试**：25 个 `test_uapi_interval.py` + 11 个 `test_web_interval.py` = **36 新测试**，全量 **323/323** 通过
+
+**已知限制**（v3.1+ 候选）：
+- 没有 429 自动退避（用户需手动调大）
+- 不能按 UP 主维度动态调整
+- interval_ms 是全局值，不能分端点
+
+### v3.0.8-alpha（2026-08-21）—— **另存 + 智能文件管理**
+
+- **🆕 另存按钮**（v3.0.8+）：用 File System Access API 弹文件选择器，**不弹浏览器"另存为"**（Chrome/Edge 86+）
+- **🆕 智能定位文件管理器**（v3.0.8+）：`/api/open-output-folder` 按文件类型选目录（CSV → `output/`，XLSX → `output/xlsx/`）+ 高亮文件
+- **修正 150 条误判**：uapis "150 条限制" 实际是"动态"（按 UP 主 + 时间窗口），不是硬限制。**春山响 900/983 (91.5%)** 是上限
+
+### v3.0.7-alpha（2026-08-21）—— **阶段 2 批量 + 智能文件管理**
+
+- **🆕 阶段 2 批量抓取**（`/api/author/detail/batch`）：多选 CSV 并行抓，每个 CSV 一个 XLSX
+- **🆕 实时进度兼容批量**：`/api/author/detail/progress` 兼容单/批量模式（`sub_total` / `sub_done` / `xlsx_paths` / `errors`）
+- **🆕 在文件管理器中打开**（v3.0.7+）：Windows / macOS / Linux 三平台支持
+- **🆕 文件列表分组**：阶段 2 列表按 mtime 分组（今天 / 昨天 / 本周 / 更早）
+
+### v3.0.6-alpha（2026-08-21）—— **UP 主主页信息批量抓取**
+
+- **🆕 主页信息端点**（`/api/author/profile`）：批量抓多个 UP 主的昵称/等级/粉丝数/投稿数
+- **🆕 双格式导出**：CSV（`output/profiles_*.csv`）+ XLSX（`output/xlsx/profiles_*.xlsx`）
+- **🆕 uapis.cn userinfo 端点**：补全 B 站官方端点没暴露的字段
+
+### v3.0.5-alpha（2026-08-21）—— **数据完整性诊断**
+
+- **🆕 完整性评估**（`AuthorArchiveChain._assess_completeness`）：实际抓到 N 条 vs provider 报告的 total
+- **🆕 3 档提示**：`ok`（≥90%）/ `partial`（< 50%）/ `unknown`（无 total）
+- **🆕 元信息字段**：`_completeness` / `_chain` / `_provider_total` / `_actual_count` 写到 archive 第 1 条
+
+### v3.0.4-alpha（2026-08-21）—— **阶段 2 实时进度**
+
+- **🆕 异步抓详情**（`/api/author/detail`）：立即返回 `job_id`，后台线程跑抓取
+- **🆕 进度轮询**（`/api/author/detail/progress`）：前端 0.6s 轮询，看得见在抓哪个
+
+### v3.0.3-alpha（2026-08-21）—— **日期快捷 + unlimited 修复**
+
+- **🆕 日期快捷按钮**（近 7/30/90 天 / 全部时间）
+- **修复 unlimited bug**：`unlimited=true` 之前被默认 7 天覆盖
+
+### v3.0.2-alpha（2026-08-21）—— **批量删除**
+
+- **🆕 通配符批量删除**（`/api/author/files/delete-batch`）：`*` / `?` / `[seq]` 一次清多个测试残留
+
+### v3.0.1-alpha（2026-08-21）—— **XLSX 单独目录 + 单文件删除**
+
+- **🆕 XLSX 单独目录**：阶段 2 XLSX 默认存 `output/xlsx/`（与 CSV 分离）
+- **🆕 单文件删除**（`/api/author/files/<path:filename>` DELETE）
+- **修复**：作者详情 GBK emoji 打印 bug（用 `OK` / `FAIL` 替代 `✓` / `✗`）
+
+### v3.0.0-alpha（2026-08-21）—— **Web 端集成（UAPI + 数据源切换）**
+
+- **🆕 `/api/author/providers`** 端点：返回 3 个 provider 元信息（QPS / 积分 / 风险）
+- **🆕 `/api/author/list`** 端点：阶段 1 拉列表 + 导出 CSV（接 provider / key / days）
+- **🆕 4 套数据源**：
+  - uapis.cn（默认）：访客 4 QPS / 登录 7 QPS
+  - self-wbi：自主 WBI 签名（v2.9.1+）
+  - self-legacy：旧端点（最末位降级）
+  - 自动降级链：限流时自动切到下一个
+- **🆕 前端「⚙ 数据源设置」卡片**：provider 下拉 + API key 输入 + localStorage + 风险卡
+- **🆕 API key 只存 localStorage**（不上传服务器）
+- **库改造**：`AuthorListExporter.export()` 新增 `archives=` 参数（与 chain 配合）
+
+### v2.10.0-alpha（2026-08-21）—— **UAPI 抽象层**
+
+- **🆕 6 个新文件**：`bilibili_tool/uapi/{base, uapis_cn, self_wbi, self_legacy, chain, __init__}.py`
+- **🆕 56 个 UAPI 单元测试**（mock 模式，零网络）
+- **🆕 5 类异常**：`UapiRateLimitError` / `UapiAuthError` / `UapiNotFoundError` / `UapiTimeoutError` / `UapiError`
+- **🆕 降级链原则**：只有限流触发降级，其他错误直接抛
+- **🆕 访客模式**：uapis.cn 不传 key 也能用（1500 积分/月，4 QPS）
+
+### v2.9.1（2026-08-21）—— **WBI 签名 + UP 主空间端点**
+
+- **🆕 WBI 签名**（`bilibili_tool/wbi.py`）：B 站 2023-03 起的官方接口，需要 WBI 鉴权
+- **🆕 `/x/space/wbi/arc/search`** 端点：替代已 404 的 `/x/polymer/web-space/home/seek_arc`
+- **🆕 WBI key 缓存**（`data/wbi_keys.json`）：12h 自动刷新
+- **🆕 25 个 WBI 测试**（`test_wbi.py`）：签名 / 缓存 / enc_wbi
+
+### v2.9.0（2026-08-21）—— **按 UP 主抓取（CLI 起步）**
+
+- **🆕 `AuthorVideoFetcher`**：按 UP 主 UID 抓其投稿视频列表
+- **🆕 `AuthorListExporter`**：列表 → CSV
+- **🆕 `AuthorDetailExporter`**：CSV → XLSX（每条视频详情）
+- **🆕 两阶段工作流**（CLI）：阶段 1 拉列表 → CSV → 阶段 2 抓详情 → XLSX
 
 ### v2.8.0（2026-08-21）—— **专栏 + 番剧支持**
 
