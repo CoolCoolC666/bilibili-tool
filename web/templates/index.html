@@ -8,8 +8,8 @@
 </head>
 <body>
   <header>
-    <h1>🎬 B 站视频信息抓取工具</h1>
-    <p class="subtitle">支持 AV / BV / 完整 URL / b23.tv 短链 · 自动缓存 · 断点续传</p>
+    <h1>🎬 B 站信息抓取工具</h1>
+    <p class="subtitle">支持视频 / 专栏 / 番剧 + 短链 · 自动缓存 · 断点续传</p>
   </header>
 
   <main>
@@ -19,7 +19,9 @@
 BV1FpLU62EZW
 av170001
 https://www.bilibili.com/video/BV14QLU6dEuf
-https://b23.tv/xxxxxx"></textarea>
+https://www.bilibili.com/read/cv12345
+https://www.bilibili.com/bangumi/play/ss67890
+https://b23.tv/xxxxxx   (短链自动展开 + 自动分类)"></textarea>
 
       <details class="options">
         <summary>高级选项</summary>
@@ -44,6 +46,12 @@ https://b23.tv/xxxxxx"></textarea>
           </label>
           <label class="inline" title="默认关闭，避免把年份/统计数字误识别为 AV 号">
             <input id="allow_bare_numbers" type="checkbox" /> 允许识别 6-16 位裸数字为 AV 号
+          </label>
+          <label class="inline" title="默认勾选。识别到专栏 URL 时自动抓取（/read/cv 或 /opus/）">
+            <input id="fetch_articles" type="checkbox" checked /> 抓取专栏
+          </label>
+          <label class="inline" title="默认勾选。识别到番剧 URL 时自动抓取（/bangumi/play/ss 或 /ep）">
+            <input id="fetch_bangumi" type="checkbox" checked /> 抓取番剧
           </label>
         </div>
         <p class="hint">静态字段（标题/UP主/发布时间/时长）永远缓存；失败/失效状态也永远缓存；只有播放/点赞/收藏/评论/弹幕这些动态数字受新鲜度控制。</p>

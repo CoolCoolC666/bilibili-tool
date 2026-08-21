@@ -292,6 +292,109 @@ AV116454968068779"""
         self.assertEqual(items[0].kind, "av")
         self.assertEqual(items[0].value, "170001")
 
+    # === v2.8.0：专栏 / 番剧 / opus 识别 ===
+
+    def test_article_url_old_format(self):
+        """旧版专栏 URL：bilibili.com/read/cv{数字}"""
+        items = parse_text("https://www.bilibili.com/read/cv12345")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "article")
+        self.assertEqual(items[0].value, "12345")
+
+    def test_article_url_opus_format(self):
+        """v2.8.0：新增识别新版 opus URL：bilibili.com/opus/{数字}"""
+        items = parse_text("https://www.bilibili.com/opus/1187639855606136839")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "article")
+        self.assertEqual(items[0].value, "1187639855606136839")
+
+    def test_article_url_mobile_subdomain(self):
+        """m.bilibili.com 子域名也能识别（b23 短链有时跳移动版）"""
+        items = parse_text("https://m.bilibili.com/opus/1176715576215601174")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "article")
+
+    def test_article_url_no_subdomain(self):
+        """无子域名也能识别"""
+        items = parse_text("https://bilibili.com/read/cv999")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "article")
+
+    def test_bangumi_ss_url(self):
+        """番剧整季 URL：/bangumi/play/ss{数字}"""
+        items = parse_text("https://www.bilibili.com/bangumi/play/ss67890")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "bangumi_ss")
+        self.assertEqual(items[0].value, "67890")
+
+    def test_bangumi_ep_url(self):
+        """番剧单集 URL：/bangumi/play/ep{数字}"""
+        items = parse_text("https://www.bilibili.com/bangumi/play/ep1438464")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "bangumi_ep")
+        self.assertEqual(items[0].value, "1438464")
+
+    def test_mixed_video_article_bangumi(self):
+        """混合输入：视频 + 专栏 + 番剧 + 短链"""
+        text = (
+            "BV1FpLU62EZW "
+            "https://www.bilibili.com/read/cv12345 "
+            "https://www.bilibili.com/bangumi/play/ss67890 "
+            "https://www.bilibili.com/bangumi/play/ep1438464"
+        )
+        items = parse_text(text)
+        kinds = [i.kind for i in items]
+        self.assertEqual(kinds, ["bv", "article", "bangumi_ss", "bangumi_ep"])
+
+    def test_mixed_article_opus_and_old_cv(self):
+        """opus + cv 同时出现：都是 article，dedupe 按 (kind, value) 保留第一次"""
+        text = (
+            "https://www.bilibili.com/opus/111 "
+            "https://www.bilibili.com/read/cv222"
+        )
+        items = parse_text(text)
+        self.assertEqual([i.value for i in items], ["111", "222"])
+        self.assertTrue(all(i.kind == "article" for i in items))
+
+    def test_bangumi_ss_and_ep_same_season_dedup(self):
+        """ss + ep 是同一季：先按 value 去重，保留 ss 形式（短数字优先）"""
+        text = "https://www.bilibili.com/bangumi/play/ss67890 https://www.bilibili.com/bangumi/play/ep1438464"
+        items = parse_text(text)
+        # 两种 kind 不一样（bangumi_ss vs bangumi_ep），value 也不一样，不会自动去重
+        self.assertEqual(len(items), 2)
+        # 实际去重是 cache 阶段的事（同一条记录 ss+ep 都指向同一份 cache 记录）
+        # parser 阶段保留 2 条，让下游 fetcher 处理
+        self.assertEqual(items[0].kind, "bangumi_ss")
+        self.assertEqual(items[1].kind, "bangumi_ep")
+
+    def test_expand_short_url_to_bv(self):
+        """b23 短链展开后是视频（BV/AV）"""
+        from bilibili_tool.parser import expand_short_urls
+        items = parse_text("https://b23.tv/HXDxEfr")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "short_url")
+        expanded = expand_short_urls(items)
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0].kind, "bv")
+        self.assertTrue(expanded[0].value.startswith("BV1"))
+
+    def test_expand_short_url_to_article(self):
+        """b23 短链展开后是专栏（opus）"""
+        from bilibili_tool.parser import expand_short_urls
+        items = parse_text("https://b23.tv/0qnXLMe")
+        self.assertEqual(len(items), 1)
+        expanded = expand_short_urls(items)
+        # 0qnXLMe 实际跳转到 opus 形式
+        self.assertEqual(expanded[0].kind, "article")
+
+    def test_expand_short_url_to_bangumi(self):
+        """b23 短链展开后是番剧（ep）"""
+        from bilibili_tool.parser import expand_short_urls
+        items = parse_text("https://b23.tv/ep1438464")
+        self.assertEqual(len(items), 1)
+        expanded = expand_short_urls(items)
+        self.assertEqual(expanded[0].kind, "bangumi_ep")
+
 
 if __name__ == "__main__":
     unittest.main()

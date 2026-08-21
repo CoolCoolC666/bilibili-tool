@@ -57,16 +57,37 @@ function renderResults(results) {
   tbody.innerHTML = "";
   for (const r of results) {
     const tr = document.createElement("tr");
+    // 类型标签（v2.8.0：区分视频/专栏/番剧）
+    const kind = r.kind || "video";
+    let kindTag = "";
+    if (kind === "article") kindTag = '<span class="kind-tag article">专栏</span>';
+    else if (kind === "bangumi") kindTag = '<span class="kind-tag bangumi">番剧</span>';
+    else kindTag = '<span class="kind-tag video">视频</span>';
+    // ID 列：视频显示 BV/AV；专栏显示 cv；番剧显示 ss/ep
+    let idText = "";
+    if (kind === "article") idText = r.cv_id || r.raw_input || "";
+    else if (kind === "bangumi") {
+      idText = r.season_id ? `ss${r.season_id}` : (r.ep_id ? `ep${r.ep_id}` : (r.raw_input || ""));
+    } else {
+      idText = r.bvid || r.aid || r.raw_input || "";
+    }
+    // UP/作者/番剧类型 三选一
+    let meta = "";
+    if (kind === "article") meta = escapeHtml(r.author_name || "");
+    else if (kind === "bangumi") meta = escapeHtml((r.type_name || "") + (r.rating_score ? ` · ⭐${r.rating_score}` : ""));
+    else meta = escapeHtml(r.up_name || "");
+    // 描述：专栏用 summary，番剧用 desc，视频用 desc
+    let desc = r.desc || r.summary || "";
     tr.innerHTML = `
-      <td><span class="${r.status === "ok" ? "ok" : "failed"}">${r.status === "ok" ? "✓ ok" : "✗ " + (r.status || "fail")}</span></td>
-      <td>${r.bvid || r.aid || r.raw_input || ""}</td>
+      <td>${kindTag}<br/><span class="${r.status === "ok" ? "ok" : "failed"}">${r.status === "ok" ? "✓ ok" : "✗ " + (r.status || "fail")}</span></td>
+      <td>${idText}</td>
       <td class="title-cell">${escapeHtml(r.title || "(无标题)")}<br/>
-          <span class="desc-cell">${escapeHtml((r.desc || "").slice(0, 80))}</span></td>
-      <td>${escapeHtml(r.up_name || "")}</td>
+          <span class="desc-cell">${escapeHtml((desc || "").slice(0, 80))}</span></td>
+      <td>${meta}</td>
       <td class="num">${fmt(r.view)}</td>
       <td class="num">${fmt(r.like)}</td>
       <td class="num">${fmt(r.reply)}</td>
-      <td>${r.pubdate || ""}</td>
+      <td>${r.pubdate || r.publish_date || r.pubtime || ""}</td>
       <td>${r.url ? `<a href="${r.url}" target="_blank">打开</a>` : ""}</td>
     `;
     tbody.appendChild(tr);
@@ -115,6 +136,8 @@ async function startJob() {
     max_age: el("max_age").value || "1h",
     dedupe: el("dedupe").checked,
     exclude_invalid: el("exclude_invalid").checked,
+    fetch_articles: el("fetch_articles").checked,
+    fetch_bangumi: el("fetch_bangumi").checked,
   };
 
   el("start").disabled = true;

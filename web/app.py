@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from flask import (
     Flask,
@@ -21,19 +21,30 @@ from flask import (
 )
 
 from bilibili_tool import (
+    BilibiliArticleFetcher,
+    BilibiliBangumiFetcher,
     BilibiliVideoFetcher,
     Cache,
     expand_short_urls,
     export_all,
+    export_all_multi,
     parse_text,
 )
-from bilibili_tool.cache import parse_duration
-from bilibili_tool.models import VideoInfo
+from bilibili_tool.cache import (
+    _article_fingerprint,
+    _article_keys,
+    _bangumi_fingerprint,
+    _bangumi_keys,
+    parse_duration,
+)
+from bilibili_tool.models import ArticleInfo, BangumiInfo, VideoInfo
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DEFAULT_CACHE = os.path.join(ROOT, "data", "cache.json")
+DEFAULT_CACHE_ARTICLE = os.path.join(ROOT, "data", "cache_article.json")
+DEFAULT_CACHE_BANGUMI = os.path.join(ROOT, "data", "cache_bangumi.json")
 DEFAULT_OUT = os.path.join(ROOT, "output")
 
 app = Flask(
@@ -59,7 +70,10 @@ class Job:
         self.failed_count = 0
         self.from_cache = 0
         self.log: List[str] = []
-        self.results: List[VideoInfo] = []
+        # v2.8.0：三类独立 results
+        self.video_results: List[VideoInfo] = []
+        self.article_results: List[ArticleInfo] = []
+        self.bangumi_results: List[BangumiInfo] = []
         self.outputs: Dict[str, str] = {}  # format -> path
         self.error = ""
         self._lock = threading.Lock()
@@ -75,6 +89,11 @@ class Job:
 
     def snapshot(self) -> dict:
         with self._lock:
+            all_results = (
+                [self._public_video(r) for r in self.video_results]
+                + [self._public_article(r) for r in self.article_results]
+                + [self._public_bangumi(r) for r in self.bangumi_results]
+            )
             return {
                 "id": self.id,
                 "status": self.status,
@@ -86,14 +105,15 @@ class Job:
                 "failed_count": self.failed_count,
                 "from_cache": self.from_cache,
                 "log_tail": list(self.log[-30:]),
-                "results": [self._public(r) for r in self.results],
+                "results": all_results,
                 "outputs": self.outputs,
                 "error": self.error,
             }
 
     @staticmethod
-    def _public(v: VideoInfo) -> dict:
+    def _public_video(v: VideoInfo) -> dict:
         return {
+            "kind": "video",
             "raw_input": v.raw_input,
             "input_kind": v.input_kind,
             "status": v.status,
@@ -119,13 +139,144 @@ class Job:
             "fetched_at": v.fetched_at,
         }
 
+    @staticmethod
+    def _public_article(a: ArticleInfo) -> dict:
+        return {
+            "kind": "article",
+            "raw_input": a.raw_input,
+            "input_kind": a.input_kind,
+            "status": a.status,
+            "api_code": a.api_code,
+            "error": a.error,
+            "cv_id": a.cv_id,
+            "title": a.title,
+            "author_name": a.author_name,
+            "author_mid": a.author_mid,
+            "view": a.view,
+            "like": a.like,
+            "coin": a.coin,
+            "favorite": a.favorite,
+            "share": a.share,
+            "reply": a.reply,
+            "words": a.words,
+            "ctime": a.ctime,
+            "pubtime": a.pubtime,
+            "summary": a.summary,
+            "banner": a.banner,
+            "pic": a.pic,
+            "url": a.url,
+            "fetched_at": a.fetched_at,
+        }
+
+    @staticmethod
+    def _public_bangumi(b: BangumiInfo) -> dict:
+        return {
+            "kind": "bangumi",
+            "raw_input": b.raw_input,
+            "input_kind": b.input_kind,
+            "status": b.status,
+            "api_code": b.api_code,
+            "error": b.error,
+            "season_id": b.season_id,
+            "ep_id": b.ep_id,
+            "title": b.title,
+            "alias": b.alias,
+            "type_name": b.type_name,
+            "rating_score": b.rating_score,
+            "rating_count": b.rating_count,
+            "total_ep": b.total_ep,
+            "status_text": b.status_text,
+            "publish_date": b.publish_date,
+            "view": b.view,
+            "favorite": b.favorite,
+            "coins": b.coins,
+            "like": b.like,
+            "share": b.share,
+            "reply": b.reply,
+            "danmaku": b.danmaku,
+            "desc": b.desc,
+            "cover": b.cover,
+            "url": b.url,
+            "fetched_at": b.fetched_at,
+        }
+
 
 _JOBS: Dict[str, Job] = {}
 _JOBS_LOCK = threading.Lock()
 
 
+def _do_fetch_pass(
+    job: Job,
+    items: List,
+    fetcher,
+    cache,
+    max_age_seconds: int,
+    kind: str,  # "video" / "article" / "bangumi"
+    skeleton_fn,
+    progress_label: str,
+    delay: float,
+) -> List[Any]:
+    """跑一个抓取 pass：通用骨架，处理 cache 命中 / 真实请求。"""
+    results: List[Any] = []
+    if not items:
+        return results
+    job.push_log(f"  {progress_label} 共 {len(items)} 个")
+    for i, p in enumerate(items, 1):
+        sk = skeleton_fn(p)
+        if cache is not None:
+            cached = cache.get_fresh(sk, max_age_seconds=max_age_seconds)
+            if cached:
+                results.append(cached)
+                job.from_cache += 1
+                job.processed += 1
+                if cached.is_ok:
+                    job.ok_count += 1
+                else:
+                    job.failed_count += 1
+                job.push_log(
+                    f"  [{i}/{len(items)}] ↪ cache {p.value} -> {cached.status}"
+                )
+                continue
+        job.push_log(f"  [{i}/{len(items)}] → 请求 {p.value} ...")
+        info = fetcher.fetch_with_retry(p)
+        results.append(info)
+        job.processed += 1
+        if info.is_ok:
+            job.ok_count += 1
+            job.push_log(f"  [{i}/{len(items)}] ✓ {info.title[:28]}")
+        else:
+            job.failed_count += 1
+            job.push_log(
+                f"  [{i}/{len(items)}] ✗ {p.value} {info.status} code={info.api_code} {info.error}"
+            )
+        if cache is not None:
+            cache.put(info)
+        if i < len(items) and delay > 0:
+            time.sleep(delay)
+    return results
+
+
+def _video_skeleton(p):
+    return VideoInfo(
+        input_kind=p.kind,
+        bvid=p.value if p.kind == "bv" else "",
+        aid=int(p.value) if p.kind == "av" else 0,
+        raw_input=p.raw,
+    )
+
+
+def _article_skeleton(p):
+    return ArticleInfo(input_kind=p.kind, cv_id=p.value, raw_input=p.raw)
+
+
+def _bangumi_skeleton(p):
+    if p.kind == "bangumi_ss":
+        return BangumiInfo(input_kind=p.kind, season_id=int(p.value), raw_input=p.raw)
+    return BangumiInfo(input_kind=p.kind, ep_id=int(p.value), raw_input=p.raw)
+
+
 def _run_job(job: Job) -> None:
-    """后台线程：实际抓取逻辑。"""
+    """后台线程：实际抓取逻辑。v2.8.0 支持视频/专栏/番剧三类。"""
     try:
         job.status = "running"
         job.push_log(f"任务启动：{job.targets[:80]}{'...' if len(job.targets) > 80 else ''}")
@@ -136,7 +287,7 @@ def _run_job(job: Job) -> None:
             hint = ""
             if not job.options.get("allow_bare_numbers", False):
                 hint = "（如果输入里全是数字，勾选「允许识别裸数字为 AV 号」再试）"
-            job.error = f"未识别到任何 AV / BV / URL。{hint}"
+            job.error = f"未识别到任何 AV / BV / URL / 专栏 / 番剧。{hint}"
             job.push_log("❌ " + job.error)
             return
 
@@ -148,16 +299,34 @@ def _run_job(job: Job) -> None:
             job.push_log("❌ " + job.error)
             return
 
-        job.total = len(parsed)
-        job.push_log(f"解析到 {job.total} 个目标")
+        # 按 kind 分桶
+        video_items = [p for p in parsed if p.kind in ("av", "bv")]
+        article_items = [p for p in parsed if p.kind == "article"]
+        bangumi_items = [p for p in parsed if p.kind in ("bangumi_ss", "bangumi_ep")]
 
-        cache = Cache(DEFAULT_CACHE) if not job.options.get("no_cache") else None
-        fetcher = BilibiliVideoFetcher(
-            max_retries=int(job.options.get("retry", 1)),
-            timeout=float(job.options.get("timeout", 10.0)),
+        # 应用 fetch 开关
+        if not job.options.get("fetch_articles", True):
+            if article_items:
+                job.push_log(f"  --no-fetch-articles：跳过 {len(article_items)} 个专栏")
+            article_items = []
+        if not job.options.get("fetch_bangumi", True):
+            if bangumi_items:
+                job.push_log(f"  --no-fetch-bangumi：跳过 {len(bangumi_items)} 个番剧")
+            bangumi_items = []
+
+        job.total = len(video_items) + len(article_items) + len(bangumi_items)
+        if job.total == 0:
+            job.status = "error"
+            job.error = "过滤后没有需要抓取的项目。"
+            job.push_log("❌ " + job.error)
+            return
+        job.push_log(
+            f"解析到 {len(parsed)} 个 → 视频 {len(video_items)} / 专栏 {len(article_items)} / 番剧 {len(bangumi_items)}"
         )
-        delay = float(job.options.get("delay", 0.5))
-        if job.options.get("no_cache"):
+
+        # 缓存策略
+        no_cache = job.options.get("no_cache", False)
+        if no_cache:
             max_age_seconds = 0
             max_age_desc = "0（不用缓存）"
         else:
@@ -165,90 +334,117 @@ def _run_job(job: Job) -> None:
             if max_age_seconds is None:
                 max_age_seconds = 3600
             max_age_desc = job.options.get("max_age", "1h")
-        job.push_log(f"缓存策略: max-age = {max_age_desc}（静态字段永远，失败状态永远）")
+        job.push_log(f"缓存策略: max-age = {max_age_desc}")
 
-        for i, p in enumerate(parsed, 1):
-            sk = VideoInfo(
-                input_kind=p.kind,
-                bvid=p.value if p.kind == "bv" else "",
-                aid=int(p.value) if p.kind == "av" else 0,
-                raw_input=p.raw,
+        # 三种 cache 各自独立
+        video_cache = Cache(DEFAULT_CACHE) if not no_cache else None
+        article_cache = Cache(
+            DEFAULT_CACHE_ARTICLE,
+            record_class=ArticleInfo, key_func=_article_keys, fingerprint=_article_fingerprint,
+        ) if not no_cache else None
+        bangumi_cache = Cache(
+            DEFAULT_CACHE_BANGUMI,
+            record_class=BangumiInfo, key_func=_bangumi_keys, fingerprint=_bangumi_fingerprint,
+        ) if not no_cache else None
+
+        delay = float(job.options.get("delay", 0.5))
+        retry = int(job.options.get("retry", 1))
+        timeout = float(job.options.get("timeout", 10.0))
+
+        # --- 视频 ---
+        if video_items:
+            fetcher = BilibiliVideoFetcher(max_retries=retry, timeout=timeout)
+            job.push_log(f"📹 开始抓取视频")
+            job.video_results = _do_fetch_pass(
+                job, video_items, fetcher, video_cache, max_age_seconds,
+                kind="video", skeleton_fn=_video_skeleton,
+                progress_label="视频", delay=delay,
             )
-            if cache is not None:
-                cached = cache.get_fresh(sk, max_age_seconds=max_age_seconds)
-                if cached:
-                    job.results.append(cached)
-                    job.from_cache += 1
-                    job.processed += 1
-                    if cached.is_ok:
-                        job.ok_count += 1
-                    else:
-                        job.failed_count += 1
-                    age_hint = ""
-                    if cached.status == "ok" and cached.fetched_at:
-                        try:
-                            from datetime import datetime as _dt
-                            fetched = _dt.strptime(cached.fetched_at, "%Y-%m-%d %H:%M:%S")
-                            age_sec = (_dt.now() - fetched).total_seconds()
-                            if age_sec < 60:
-                                age_hint = f"（{int(age_sec)}秒前抓的）"
-                            elif age_sec < 3600:
-                                age_hint = f"（{int(age_sec/60)}分钟前抓的）"
-                            else:
-                                age_hint = f"（{int(age_sec/3600)}小时前抓的）"
-                        except ValueError:
-                            pass
-                    job.push_log(
-                        f"  [{i}/{job.total}] ↪ cache {p.value} -> {cached.status} {age_hint}"
-                    )
-                    continue
+            if video_cache is not None:
+                try:
+                    video_cache.save()
+                except OSError as e:
+                    job.push_log(f"⚠ 视频缓存保存失败: {e}")
 
-            job.push_log(f"  [{i}/{job.total}] → 请求 {p.value} ...")
-            info = fetcher.fetch_with_retry(p)
-            job.results.append(info)
-            job.processed += 1
-            if info.is_ok:
-                job.ok_count += 1
-                job.push_log(f"  [{i}/{job.total}] ✓ {info.title[:28]}")
-            else:
-                job.failed_count += 1
-                job.push_log(
-                    f"  [{i}/{job.total}] ✗ {p.value} {info.status} code={info.api_code} {info.error}"
-                )
-            if cache is not None:
-                cache.put(info)
-            if i < job.total and delay > 0:
-                time.sleep(delay)
+        # --- 专栏 ---
+        if article_items:
+            fetcher = BilibiliArticleFetcher(max_retries=retry, timeout=timeout)
+            job.push_log(f"📝 开始抓取专栏")
+            job.article_results = _do_fetch_pass(
+                job, article_items, fetcher, article_cache, max_age_seconds,
+                kind="article", skeleton_fn=_article_skeleton,
+                progress_label="专栏", delay=delay,
+            )
+            if article_cache is not None:
+                try:
+                    article_cache.save()
+                except OSError as e:
+                    job.push_log(f"⚠ 专栏缓存保存失败: {e}")
 
-        if cache is not None:
-            try:
-                cache.save()
-                job.push_log(f"💾 缓存已保存: {DEFAULT_CACHE}")
-            except OSError as e:
-                job.push_log(f"⚠ 缓存保存失败: {e}")
+        # --- 番剧 ---
+        if bangumi_items:
+            fetcher = BilibiliBangumiFetcher(max_retries=retry, timeout=timeout)
+            job.push_log(f"🎬 开始抓取番剧")
+            job.bangumi_results = _do_fetch_pass(
+                job, bangumi_items, fetcher, bangumi_cache, max_age_seconds,
+                kind="bangumi", skeleton_fn=_bangumi_skeleton,
+                progress_label="番剧", delay=delay,
+            )
+            if bangumi_cache is not None:
+                try:
+                    bangumi_cache.save()
+                except OSError as e:
+                    job.push_log(f"⚠ 番剧缓存保存失败: {e}")
+
+        job.push_log(f"💾 缓存已保存")
 
         # 导出
         try:
             base = f"web_{job.id[:8]}_{datetime.now().strftime('%H%M%S')}"
-            saved = export_all(
-                job.results,
-                base=base,
-                out_dir=DEFAULT_OUT,
-                dedupe=job.options.get("dedupe", True),
-                exclude_invalid=job.options.get("exclude_invalid", False),
-            )
+            has_multi = bool(job.article_results or job.bangumi_results)
+            excl = job.options.get("exclude_invalid", False)
+            dedupe = job.options.get("dedupe", True)
+            if has_multi:
+                saved = export_all_multi(
+                    base=base, out_dir=DEFAULT_OUT,
+                    videos=job.video_results, articles=job.article_results, bangumis=job.bangumi_results,
+                    dedupe=dedupe, exclude_invalid=excl,
+                )
+            else:
+                saved = export_all(
+                    job.video_results, base=base, out_dir=DEFAULT_OUT,
+                    dedupe=dedupe, exclude_invalid=excl,
+                )
             for fmt, path in saved.items():
                 job.outputs[fmt] = os.path.basename(path)
                 job.push_log(f"📦 导出 {fmt}: {os.path.basename(path)}")
-            n_raw = len(job.results)
-            from bilibili_tool.exporter import dedupe_videos as _dedupe, filter_valid as _filt
-            n_after_filter = len(_filt(job.results)) if job.options.get("exclude_invalid", False) else n_raw
-            n_final = len(_dedupe(_filt(job.results) if job.options.get("exclude_invalid", False) else job.results))
-            n_dedup_diff = n_after_filter - n_final
-            if job.options.get("exclude_invalid", False) and n_raw != n_after_filter:
-                job.push_log(f"  ↪ 排除失效：{n_raw} 条 → {n_after_filter} 条")
-            if job.options.get("dedupe", True) and n_dedup_diff:
-                job.push_log(f"  ↪ 去重：{n_after_filter} 条 → {n_final} 条")
+
+            # 统计
+            all_results = job.video_results + job.article_results + job.bangumi_results
+            n_raw = len(all_results)
+            from bilibili_tool.exporter import (
+                filter_valid as _filt,
+                dedupe_videos as _dv, dedupe_articles as _da, dedupe_bangumis as _db,
+            )
+            if excl:
+                v_after = len(_filt(job.video_results))
+                a_after = len(_filt(job.article_results))
+                b_after = len(_filt(job.bangumi_results))
+                n_after = v_after + a_after + b_after
+                if n_raw != n_after:
+                    job.push_log(f"  ↪ 排除失效：{n_raw} 条 → {n_after} 条")
+            else:
+                v_after = len(job.video_results)
+                a_after = len(job.article_results)
+                b_after = len(job.bangumi_results)
+                n_after = n_raw
+            if dedupe:
+                v_f = len(_dv(_filt(job.video_results) if excl else job.video_results))
+                a_f = len(_da(_filt(job.article_results) if excl else job.article_results))
+                b_f = len(_db(_filt(job.bangumi_results) if excl else job.bangumi_results))
+                n_final = v_f + a_f + b_f
+                if n_after != n_final:
+                    job.push_log(f"  ↪ 去重：{n_after} 条 → {n_final} 条")
         except Exception as e:
             job.push_log(f"⚠ 导出失败: {e}")
 
@@ -285,6 +481,8 @@ def create_job():
         "max_age": data.get("max_age", "1h"),
         "dedupe": bool(data.get("dedupe", True)),
         "exclude_invalid": bool(data.get("exclude_invalid", False)),
+        "fetch_articles": bool(data.get("fetch_articles", True)),
+        "fetch_bangumi": bool(data.get("fetch_bangumi", True)),
     }
     job_id = uuid.uuid4().hex[:12]
     job = Job(job_id, targets, options)
@@ -349,19 +547,38 @@ def download_output(filename):
 
 @app.route("/api/cache/stats")
 def cache_stats():
-    if not os.path.exists(DEFAULT_CACHE):
+    """v2.8.0：返回 3 类 cache 的总统计。"""
+    total = {"total": 0, "ok": 0, "failed": 0}
+    paths = []
+    for label, path in [
+        ("视频", DEFAULT_CACHE),
+        ("专栏", DEFAULT_CACHE_ARTICLE),
+        ("番剧", DEFAULT_CACHE_BANGUMI),
+    ]:
+        if os.path.exists(path):
+            try:
+                c = Cache(path)
+                s = c.stats()
+                total["total"] += s["total"]
+                total["ok"] += s["ok"]
+                total["failed"] += s["failed"]
+                paths.append(path)
+            except Exception:
+                pass
+    if not paths:
         return jsonify({"exists": False, "stats": {"total": 0, "ok": 0, "failed": 0}})
-    c = Cache(DEFAULT_CACHE)
-    return jsonify({"exists": True, "stats": c.stats(), "path": DEFAULT_CACHE})
+    return jsonify({"exists": True, "stats": total, "paths": paths})
 
 
 @app.route("/api/cache", methods=["DELETE"])
 def cache_clear():
-    if os.path.exists(DEFAULT_CACHE):
-        try:
-            os.remove(DEFAULT_CACHE)
-        except OSError as e:
-            return jsonify({"error": str(e)}), 500
+    """v2.8.0：清空所有 3 类 cache。"""
+    for p in (DEFAULT_CACHE, DEFAULT_CACHE_ARTICLE, DEFAULT_CACHE_BANGUMI):
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError as e:
+                return jsonify({"error": str(e)}), 500
     return jsonify({"ok": True})
 
 
