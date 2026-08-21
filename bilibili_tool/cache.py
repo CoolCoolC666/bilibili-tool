@@ -9,17 +9,18 @@
 - 跨 AV/BV 双索引：同一视频的 BV 号和 AV 号都指向同一条 cache 记录
   * 用户输入 "BV1xxx 170001"，第一次跑就只发 1 个请求，第二次更不用说
 
+**v2.8.0 扩展**：Cache 类现在支持任意 dataclass（通过 record_class + key_func 注入），
+用于 video / article / bangumi 三种独立 cache 文件。
+
 使用：
+  # 视频（默认行为，VideoInfo 专用 key_func）
   cache = Cache("data/cache.json")
 
-  # 默认：静态永远，动态 1h 内
-  cached = cache.get_fresh(info) or fetcher.fetch_with_retry(target)
+  # 专栏（ArticleInfo 专用 key_func）
+  cache = Cache("data/cache_article.json", record_class=ArticleInfo, key_func=article_keys)
 
-  # 自定义：静态永远，动态 24h 内
-  cached = cache.get_fresh(info, max_age_seconds=86400) or ...
-
-  # 强制不缓存
-  cached = cache.get_fresh(info, max_age_seconds=0) or ...
+  # 番剧（BangumiInfo 专用 key_func）
+  cache = Cache("data/cache_bangumi.json", record_class=BangumiInfo, key_func=bangumi_keys)
 """
 from __future__ import annotations
 
@@ -27,16 +28,15 @@ import json
 import os
 import tempfile
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Type
 
-from .models import VideoInfo
+from .models import ArticleInfo, BangumiInfo, VideoInfo
 
 
-def _all_keys(info: VideoInfo) -> List[str]:
-    """一条 VideoInfo 可能对应的所有 cache key。
+# ---- key_func 工厂 ----
 
-    同一条记录会按 BV / AV / raw 同时索引，这样用户用任意一种 ID 都能命中。
-    """
+def _video_keys(info: VideoInfo) -> List[str]:
+    """VideoInfo 专用：跨 BV / AV / raw 三种 ID 索引。"""
     keys = []
     if info.bvid:
         keys.append(f"bv:{info.bvid}")
@@ -47,8 +47,54 @@ def _all_keys(info: VideoInfo) -> List[str]:
     return keys
 
 
+def _article_keys(info: ArticleInfo) -> List[str]:
+    """ArticleInfo 专用：按 cv_id 索引。"""
+    keys = []
+    if info.cv_id:
+        keys.append(f"cv:{info.cv_id}")
+    if not keys and info.raw_input:
+        keys.append(f"raw:{info.raw_input}")
+    return keys
+
+
+def _bangumi_keys(info: BangumiInfo) -> List[str]:
+    """BangumiInfo 专用：按 ss_id / ep_id / raw 索引。
+
+    同一条番剧的 ss + ep 都指向同一份（实际数据用 season_id 抓的）。
+    """
+    keys = []
+    if info.season_id:
+        keys.append(f"ss:{info.season_id}")
+    if info.ep_id:
+        keys.append(f"ep:{info.ep_id}")
+    if not keys and info.raw_input:
+        keys.append(f"raw:{info.raw_input}")
+    return keys
+
+
+# ---- 内容指纹（用于去重双索引 / 各种 ID） ----
+
+def _video_fingerprint(d: dict) -> tuple:
+    return (d.get("bvid") or "", d.get("aid"), d.get("raw_input") or "")
+
+
+def _article_fingerprint(d: dict) -> tuple:
+    return (d.get("cv_id") or "", d.get("raw_input") or "")
+
+
+def _bangumi_fingerprint(d: dict) -> tuple:
+    return (d.get("season_id"), d.get("ep_id"), d.get("raw_input") or "")
+
+
+# ---- 向后兼容的旧 API（VideoInfo） ----
+
+def _all_keys(info: VideoInfo) -> List[str]:
+    """一条 VideoInfo 可能对应的所有 cache key。**保留旧 API 兼容**。"""
+    return _video_keys(info)
+
+
 def _primary_key(info: VideoInfo) -> str:
-    """取第一个可用的 key（用于向后兼容 has() 等单 key 场景）。"""
+    """取第一个可用的 key。**保留旧 API 兼容**。"""
     keys = _all_keys(info)
     return keys[0] if keys else f"raw:{info.raw_input}"
 
@@ -81,9 +127,31 @@ def parse_duration(s: str) -> Optional[int]:
         return None
 
 
+# ---- 通用 Cache 类（v2.8.0 重构） ----
+
 class Cache:
-    def __init__(self, path: str):
+    """通用 JSON 缓存，支持任意 dataclass。
+
+    构造参数：
+      path            缓存文件路径
+      record_class    记录类（默认 VideoInfo，**保留旧行为**）
+      key_func        计算缓存 key 的函数（默认 _video_keys）
+      fingerprint     计算去重指纹的函数（默认 _video_fingerprint）
+    """
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        record_class: Type = VideoInfo,
+        key_func: Callable[[Any], List[str]] = None,
+        fingerprint: Callable[[dict], tuple] = None,
+    ):
         self.path = path
+        self.record_class = record_class
+        self.key_func = key_func or _video_keys
+        self.fingerprint = fingerprint or _video_fingerprint
+
         self._data: Dict[str, dict] = {}
         if os.path.exists(path):
             try:
@@ -94,50 +162,49 @@ class Cache:
             except (json.JSONDecodeError, OSError):
                 # 损坏的缓存不要影响主流程，直接当空
                 self._data = {}
-        # 升级：旧 cache 是单 key 索引，遍历 records 重新 put 让它变成双索引
-        self._upgrade_dual_index()
+        # 升级：旧 cache 是单 key 索引，遍历 records 重新 put 让它变成多索引
+        self._upgrade_multi_index()
 
-    def _upgrade_dual_index(self) -> None:
-        """检查每条记录的 bvid/aid，把缺失的 key 补上。
+    def _all_keys(self, info) -> List[str]:
+        """根据 key_func 计算一条记录的所有 key。"""
+        return self.key_func(info)
 
-        旧版本 cache 只按一种 key 索引，新版本按 bvid+aid 双索引。
-        启动时遍历一遍 records，看哪些 key 缺失就补上。补完不一定 save（不修改用户磁盘文件），
-        但下次 put 会自动持久化。
+    def _upgrade_multi_index(self) -> None:
+        """检查每条记录的字段，把缺失的 key 补上。
+
+        旧版本 cache 只按一种 key 索引（如只 bv:），新版本按多种 key 索引
+        （如 bv: + av: / cv: / ss: + ep:）。
         """
-        # 先收集所有需要补的 (key, payload)
         upgrades = []
-        seen_payloads: set = set()  # 用 id() 避免重复处理同一条 in-memory dict
+        seen_payloads: set = set()
         for key, payload in list(self._data.items()):
             if id(payload) in seen_payloads:
                 continue
             seen_payloads.add(id(payload))
-            # 这条 payload 应该有哪些 key
-            wanted_keys = set()
-            if payload.get("bvid"):
-                wanted_keys.add(f"bv:{payload['bvid']}")
-            if payload.get("aid"):
-                wanted_keys.add(f"av:{payload['aid']}")
-            if not wanted_keys and payload.get("raw_input"):
-                wanted_keys.add(f"raw:{payload['raw_input']}")
-            # 缺的补上
+            # 还原一条 record 对象，让 key_func 算所有应有的 key
+            try:
+                rec = self.record_class(**payload)
+            except TypeError:
+                continue
+            wanted_keys = set(self.key_func(rec))
             for w in wanted_keys:
                 if w not in self._data:
                     upgrades.append((w, payload))
         for w, payload in upgrades:
             self._data[w] = payload
 
-    def has(self, info: VideoInfo) -> bool:
-        return any(k in self._data for k in _all_keys(info))
+    def has(self, info) -> bool:
+        return any(k in self._data for k in self._all_keys(info))
 
-    def get(self, info: VideoInfo) -> Optional[VideoInfo]:
+    def get(self, info) -> Optional[Any]:
         """不管新鲜度，直接拿 cache 记录。尝试所有可能的 key。"""
-        for k in _all_keys(info):
+        for k in self._all_keys(info):
             d = self._data.get(k)
             if d:
-                return VideoInfo(**d)
+                return self.record_class(**d)
         return None
 
-    def is_fresh(self, info: VideoInfo, max_age_seconds) -> bool:
+    def is_fresh(self, info, max_age_seconds) -> bool:
         """判断 cache 是否还在新鲜度内。
 
         max_age_seconds:
@@ -158,56 +225,45 @@ class Cache:
         age = (datetime.now() - fetched).total_seconds()
         return age <= max_age_seconds
 
-    def get_fresh(
-        self, info: VideoInfo, max_age_seconds
-    ) -> Optional[VideoInfo]:
+    def get_fresh(self, info, max_age_seconds) -> Optional[Any]:
         """拿 cache 记录，但**只在新鲜度内**才返回；否则返回 None。
 
-        失败/失效状态（status != "ok"）**永远算新鲜**（视频失效不会"复活"）。
+        失败/失效状态（status != "ok"）**永远算新鲜**。
         """
         cached = self.get(info)
         if not cached:
             return None
-        # 失败状态永远算新鲜
         if cached.status != "ok":
             return cached
-        # 成功状态：判断动态字段是否过期
         return cached if self.is_fresh(cached, max_age_seconds) else None
 
-    def put(self, info: VideoInfo) -> None:
-        """存一条记录，**按所有可能的 key 同时索引**。
-
-        比如一条记录同时有 bvid=BV1xxx 和 aid=170001：
-        - cache["bv:BV1xxx"] = record
-        - cache["av:170001"] = record
-        下次用户输入任意一种 ID 都能命中同一条。
-        """
-        keys = _all_keys(info)
+    def put(self, info) -> None:
+        """存一条记录，**按所有可能的 key 同时索引**。"""
+        keys = self._all_keys(info)
         if not keys:
-            # 没有任何 ID 的 fallback，用 raw_input 作 key
-            keys = [f"raw:{info.raw_input}"]
-        payload = info.to_dict()
+            keys = [f"raw:{getattr(info, 'raw_input', '')}"]
+        payload = info.to_dict() if hasattr(info, "to_dict") else dict(info.__dict__)
         for k in keys:
             self._data[k] = payload
 
-    def all_records(self) -> List[VideoInfo]:
-        """返回去重后的所有记录（双索引会指向同一份 dict，需要去重）。
-
-        用 (bvid, aid, raw_input) 作为内容指纹——不论从内存 dict 还是 JSON
-        加载回来的新 dict 都能正确去重。
-        """
+    def all_records(self) -> List[Any]:
+        """返回去重后的所有记录（多索引会指向同一份 dict，需要去重）。"""
         seen: set = set()
-        out: List[VideoInfo] = []
+        out: List[Any] = []
         for d in self._data.values():
-            fingerprint = (d.get("bvid") or "", d.get("aid"), d.get("raw_input") or "")
-            if fingerprint in seen:
+            fp = self.fingerprint(d)
+            if fp in seen:
                 continue
-            seen.add(fingerprint)
-            out.append(VideoInfo(**d))
+            seen.add(fp)
+            try:
+                out.append(self.record_class(**d))
+            except TypeError:
+                # 字段不匹配（升级中可能遇到）—— 跳过
+                continue
         return out
 
     def unique_count(self) -> int:
-        """返回去重后的"实际视频数"（不受双索引影响）。"""
+        """返回去重后的实际记录数。"""
         return len(self.all_records())
 
     def save(self) -> None:

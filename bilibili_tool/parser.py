@@ -1,4 +1,4 @@
-"""输入解析：把任意形式的用户输入（AV / BV / URL / 短链）归一化为 (kind, payload)。
+"""输入解析：把任意形式的用户输入（AV / BV / URL / 短链 / 专栏 / 番剧）归一化为 (kind, payload)。
 
 支持的输入示例：
 - 纯数字  -> aid      (e.g. "170001")
@@ -6,7 +6,10 @@
 - BV1xxx   -> bvid     (标准 BV 开头 + 12 位 base58 字符)
 - https://www.bilibili.com/video/BV1xxx -> bvid
 - https://www.bilibili.com/video/av12345 -> aid
-- https://b23.tv/xxxxxx (短链，需联网解) -> 通过 b23.tv 头跳转
+- https://www.bilibili.com/read/cv12345 -> article
+- https://www.bilibili.com/bangumi/play/ss12345 -> bangumi_ss（整季）
+- https://www.bilibili.com/bangumi/play/ep12345 -> bangumi_ep（单集）
+- https://b23.tv/xxxxxx (短链，需联网解) -> 通过 b23.tv 头跳转后自动分类
 - BV1xxx?p=2 -> bvid + 分 p（当前版本忽略分 p）
 - BV1xxx/?spm_id_from=... -> bvid（忽略 query）
 
@@ -29,8 +32,8 @@ BV_PREFIX = "BV1"
 
 @dataclass
 class ParsedItem:
-    kind: str          # "av" | "bv" | "short_url"
-    value: str         # "170001" 或 "BV1xxx"
+    kind: str          # "av" | "bv" | "short_url" | "article" | "bangumi_ss" | "bangumi_ep"
+    value: str         # "170001" / "BV1xxx" / "cv12345" / "ss12345" / "ep12345"
     raw: str = ""      # 用户原始片段
     from_scientific: bool = False  # 是否由科学记数法转换（精度可能丢失）
 
@@ -69,8 +72,29 @@ RE_SCIENTIFIC = re.compile(r"(?<![.\w])(\d+(?:\.\d+)?[eE][+\-]?\d{1,3})\b")
 # BV 前缀（BV1 + 10 位字符）
 RE_BV = re.compile(r"\bBV1[1-9A-HJ-NP-Za-km-z]{9}\b", re.IGNORECASE)
 # 完整 URL（bilibili.com/video/...）
+# 子域名同时支持 www. / m. / 无 —— b23 短链有时会跳 m.bilibili.com
 RE_URL = re.compile(
-    r"https?://(?:www\.)?bilibili\.com/video/(?:av(\d{1,20})|BV1[1-9A-HJ-NP-Za-km-z]{9})",
+    r"https?://(?:[a-z0-9-]+\.)?bilibili\.com/video/(?:av(\d{1,20})|BV1[1-9A-HJ-NP-Za-km-z]{9})",
+    re.IGNORECASE,
+)
+# 专栏 URL（bilibili.com/read/cv{数字} —— 旧版，2024 前）
+RE_ARTICLE = re.compile(
+    r"https?://(?:[a-z0-9-]+\.)?bilibili\.com/read/cv(\d{1,20})",
+    re.IGNORECASE,
+)
+# 专栏 URL（bilibili.com/opus/{数字} —— 新版，2024+）
+RE_OPUS = re.compile(
+    r"https?://(?:[a-z0-9-]+\.)?bilibili\.com/opus/(\d{1,20})",
+    re.IGNORECASE,
+)
+# 番剧整季 URL（bilibili.com/bangumi/play/ss{数字}）
+RE_BANGUMI_SS = re.compile(
+    r"https?://(?:[a-z0-9-]+\.)?bilibili\.com/bangumi/play/ss(\d{1,10})",
+    re.IGNORECASE,
+)
+# 番剧单集 URL（bilibili.com/bangumi/play/ep{数字}）
+RE_BANGUMI_EP = re.compile(
+    r"https?://(?:[a-z0-9-]+\.)?bilibili\.com/bangumi/play/ep(\d{1,12})",
     re.IGNORECASE,
 )
 # b23.tv 短链
@@ -145,6 +169,32 @@ def parse_text(text: str, *, allow_bare_numbers: bool = False) -> List[ParsedIte
                 m.start(),
                 ParsedItem("bv", m.group(0).split("/")[-1].split("?")[0], m.group(0)),
             ))
+        _mark(m.span())
+
+    # 1b) 专栏 URL（bilibili.com/read/cv{数字} —— 旧版 + bilibili.com/opus/{数字} —— 新版）
+    for m in RE_ARTICLE.finditer(text):
+        if _overlaps(m.span()):
+            continue
+        collected.append((m.start(), ParsedItem("article", m.group(1), m.group(0))))
+        _mark(m.span())
+    for m in RE_OPUS.finditer(text):
+        if _overlaps(m.span()):
+            continue
+        collected.append((m.start(), ParsedItem("article", m.group(1), m.group(0))))
+        _mark(m.span())
+
+    # 1c) 番剧整季 URL（bilibili.com/bangumi/play/ss{数字}）
+    for m in RE_BANGUMI_SS.finditer(text):
+        if _overlaps(m.span()):
+            continue
+        collected.append((m.start(), ParsedItem("bangumi_ss", m.group(1), m.group(0))))
+        _mark(m.span())
+
+    # 1d) 番剧单集 URL（bilibili.com/bangumi/play/ep{数字}）
+    for m in RE_BANGUMI_EP.finditer(text):
+        if _overlaps(m.span()):
+            continue
+        collected.append((m.start(), ParsedItem("bangumi_ep", m.group(1), m.group(0))))
         _mark(m.span())
 
     # 2) 短链 b23.tv —— 单独拎出来，调用方决定要不要解（因为要联网）
@@ -222,7 +272,13 @@ def expand_short_urls(
     timeout: float = 8.0,
     user_agent: str = "Mozilla/5.0",
 ) -> List[ParsedItem]:
-    """把 short_url 类型的项解析成 BV/AV，HEAD 请求跟随 302 即可拿到 Location。
+    """把 short_url 类型的项解析成 BV/AV/专栏/番剧，HEAD 请求跟随 302 即可拿到 Location。
+
+    展开后按 302 目标 URL 路径自动分类：
+      - /video/...   -> kind = "bv" / "av"
+      - /read/cv...  -> kind = "article"
+      - /bangumi/play/ss... -> kind = "bangumi_ss"
+      - /bangumi/play/ep... -> kind = "bangumi_ep"
 
     无法解析的短链会被丢弃，不影响其他项。
     """
@@ -240,11 +296,28 @@ def expand_short_urls(
             final = r.url or ""
         except Exception:
             final = ""
-        # final 通常长这样：https://www.bilibili.com/video/BV1xxxxx/
-        parsed = parse_text(final)
-        if parsed:
-            # 只取第一个匹配的 BV/AV
-            out.append(parsed[0])
+        # 优先尝试 article/bangumi 子集（避免被 RE_URL 误吞）
+        # 顺序：article > bangumi_ss > bangumi_ep > video
+        classified: Optional[ParsedItem] = None
+        m_article = RE_ARTICLE.search(final)
+        m_opus = RE_OPUS.search(final)
+        m_ss = RE_BANGUMI_SS.search(final)
+        m_ep = RE_BANGUMI_EP.search(final)
+        if m_article:
+            classified = ParsedItem("article", m_article.group(1), it.value)
+        elif m_opus:
+            classified = ParsedItem("article", m_opus.group(1), it.value)
+        elif m_ss:
+            classified = ParsedItem("bangumi_ss", m_ss.group(1), it.value)
+        elif m_ep:
+            classified = ParsedItem("bangumi_ep", m_ep.group(1), it.value)
+        else:
+            # 退回 video 分类
+            parsed = parse_text(final)
+            if parsed:
+                classified = parsed[0]
+        if classified is not None:
+            out.append(classified)
         # 解析失败就丢掉，不抛
     return _dedupe_keep_order(out)
 
