@@ -1,8 +1,8 @@
-# 🎬  B 站视频信息抓取工具 v2
+# 🎬  B 站信息抓取工具 v2.8
 
-> 把一堆 AV / BV / 链接一次性丢进去，自动把每个视频的标题、UP 主、播放量、点赞、发布时间……整理成 xlsx / csv / json / txt 四种格式。带本地缓存 + 断点续传，命令行和 Web 两种入口。
+> 把一堆 **视频 / 专栏 / 番剧** ID 或链接一次性丢进去，自动把每个项目的标题、作者、播放量、点赞、发布时间……整理成 xlsx / csv / json / txt 四种格式。带本地缓存 + 断点续传，命令行和 Web 两种入口。
 
-旧版只能处理 AV 号、失效视频直接中断、没有 Web 界面；这一版全解决了。
+**v2.8 新增**：支持抓取**专栏（read/cv + opus）**和**番剧（ss + ep）**，跟视频一样支持短链展开、缓存、去重。
 
 ---
 > ## ⚠️ 使用限制
@@ -50,21 +50,23 @@
 | ① 有些视频没有 AV 号，识别不了 | 输入解析支持 `AV号` / `BV号` / `完整 URL` / `b23.tv 短链` / 裸数字 / 混合输入，按出现顺序去重 |
 | ② 输入方式不够便捷 | 提供 Flask 单页 Web：粘贴 → 按钮 → 实时看进度 → 直接下载 xlsx / csv / json / txt |
 | ③ 失效视频怎么采集 | 失效 / 404 / 412 / 稿件不可见都会被捕获并标记 `not_found` + 写明 `api_code` + 错误原因，**不打断、不抛异常**，剩下的继续抓 |
+| ④ 只能抓视频（v2.7 及之前） | **v2.8 新增**：专栏（read/cv + opus）和番剧（ss + ep）也支持，跟视频一样有缓存 / 去重 / 断点续传 |
 
 ---
 
 ## ✨ 特性
 
-- **多输入格式**：纯 AV / av 前缀 / BV / 完整 URL / 短链 / 裸数字；混在一段文本里也行（自动按出现顺序解析 + 去重）
-- **失败也能继续**：B 站常见的 `62002 稿件不可见` / `-404 不存在` / `412 已下架` 都被归类到 `not_found`，正常导出
-- **本地 JSON 缓存**：跑过的 BV/AV 写到 `data/cache.json`，下次直接命中，不再发请求
-- **跨 AV/BV 双索引**：同一条记录同时按 BV 号和 AV 号索引，用户输入 `BV1xxx 170001`（同一视频的两种 ID）**只发 1 个请求**
-- **导出自动去重**：默认按 `(bvid, aid)` 去重，同一视频导出 xlsx/csv/json/txt 时**只占一行**。需要保留全部记录加 `--no-dedupe`
+- **三类内容支持（v2.8+）**：视频（AV/BV/URL/短链）、**专栏**（read/cv + opus）、**番剧**（ss + ep）。混在一段文本里也能自动按出现顺序解析 + 去重
+- **b23 短链自动分类**：粘贴 `b23.tv/xxxxxx`，自动跟随 302 跳转识别属于视频/专栏/番剧中的哪一类
+- **失败也能继续**：B 站常见的 `62002 稿件不可见` / `-404 不存在` / `412 已下架` / `-509 限流` 都被归类到 `not_found`，正常导出
+- **本地 JSON 缓存（3 类独立）**：视频写 `data/cache.json`，专栏写 `cache_article.json`，番剧写 `cache_bangumi.json`，下次直接命中，不再发请求
+- **跨 ID 双索引**：视频（BV+AV）/ 番剧（ss+ep）都按两种 ID 索引，用户输入 `BV1xxx av170001`（同一视频的两种 ID）**只发 1 个请求**
+- **导出自动去重**：默认按 `(bvid, aid)` / `cv` / `ss+ep` 去重。同一内容导出 xlsx/csv/json/txt 时**只占一行**。需要保留全部记录加 `--no-dedupe`
 - **导出排除失效（v2.7+）**：可选 `--exclude-invalid` 只导出 `status="ok"` 的成功样本，自动剔除 `not_found` / `failed` 等失效条目。**写论文/数据分析的福音**——Excel 里不再满是"稿件不存在"
 - **科学记数法 AV 号**：识别 `1.13103E+14` / `av1.13103E+14`（Excel 复制出来的格式）。注意精度会丢失
 - **智能新鲜度**：默认动态字段（播放/点赞/收藏/评论/弹幕）**1 小时**内重抓；静态字段（标题/UP主/发布时间/时长）+ 失败/失效状态**永远缓存**
 - **断点续传**：脚本中断、网断了、机器重启，下次跑同一份输入会跳过已记录的项接着抓
-- **4 种导出格式**：`xlsx`（带表头样式 + 冻结首行）/ `csv`（UTF-8 BOM，Excel 直接打开）/ `json`（带 pretty print）/ `txt`（美观的极客风）
+- **4 种导出格式**：`xlsx`（带表头样式 + 冻结首行 + 3 sheet）/ `csv`（UTF-8 BOM，Excel 直接打开）/ `json`（带 pretty print）/ `txt`（美观的极客风）
 - **零 pandas 依赖**：xlsx 走纯 openpyxl，环境更精简，不会再撞 numpy 兼容性问题
 - **三种入口**：Python 模块 / CLI 命令 / Web 页面，按需选择
 
@@ -117,20 +119,27 @@ python cli.py "BV1FpLU62EZW av170001 https://www.bilibili.com/video/BV1hy4y1B7sX
   --out-dir DIR           输出目录，默认 ./output
   --format {xlsx,csv,json,txt,all}
                           导出格式，默认 all（一次性全导出）
-  --dedupe                导出时按 (BV, AV) 去重，同一视频只出现一行（默认开）
+  --dedupe                导出时按 (BV, AV) / (cv) / (ss+ep) 去重（默认开）
   --no-dedupe             不去重，保留所有记录
-  --exclude-invalid       导出时排除无效视频（不统计）。只保留 status=ok 的成功记录，
+  --exclude-invalid       导出时排除无效记录（不统计）。只保留 status=ok 的成功记录，
                           剔除 not_found / failed 等失效条目。默认关闭
 
+抓取内容（v2.8+）
+  --fetch-articles        识别到专栏 URL/ID 时自动抓取（默认开）
+  --no-fetch-articles     跳过专栏抓取
+  --fetch-bangumi         识别到番剧 URL/ID 时自动抓取（默认开）
+  --no-fetch-bangumi      跳过番剧抓取
+
 缓存
-  --cache PATH            缓存文件路径，默认 ./data/cache.json
+  --cache PATH            视频缓存文件路径，默认 ./data/cache.json
+  --cache-article PATH    专栏缓存文件路径，默认 ./data/cache_article.json
+  --cache-bangumi PATH    番剧缓存文件路径，默认 ./data/cache_bangumi.json
   --no-cache              完全不用缓存（等价于 --max-age 0）
-  --max-age DURATION      动态字段（播放/点赞/收藏/评论/弹幕）最大缓存年龄
+  --max-age DURATION      动态字段最大缓存年龄
                           格式 '30m' / '1h' / '24h' / '7d'
                           '0' = 不用缓存，'never' = 永远信任
                           默认 '1h'
-                          （静态字段和失败状态永远缓存，不受此影响）
-  --reset-cache           先清空缓存再开始
+  --reset-cache           先清空全部缓存再开始
   --save-cache            抓取后写回缓存（默认开）
 
 网络
@@ -140,8 +149,7 @@ python cli.py "BV1FpLU62EZW av170001 https://www.bilibili.com/video/BV1hy4y1B7sX
 
 解析
   --allow-bare-numbers    允许把 6-16 位裸数字当 AV 号
-                          （默认关闭，避免把年份/统计数字误识别；
-                          开了之后 "170001" 才会被识别）
+                          （默认关闭，避免把年份/统计数字误识别）
 ```
 
 ### ⚠ 关于"裸数字 AV 号"
@@ -174,8 +182,8 @@ python cli.py --allow-bare-numbers "170001"
 # 1) 从文件读 + 只导出 xlsx
 python cli.py -f input.txt --format xlsx -o my_batch
 
-# 2) 短链混入，自动展开
-python cli.py "https://b23.tv/xxxxxx BV1FpLU62EZW"
+# 2) 短链混入，自动展开 + 自动分类（v2.8+）
+python cli.py "https://b23.tv/HXDxEfr https://b23.tv/0qnXLMe https://b23.tv/ep1438464"
 
 # 3) 强制重抓（忽略缓存）
 python cli.py --no-cache "BV1hy4y1B7sX"
@@ -188,6 +196,12 @@ echo "BV1FpLU62EZW BV14QLU6dEuf" | python cli.py --stdin
 
 # 6) 识别裸数字
 python cli.py --allow-bare-numbers "170001 170002 170003"
+
+# 7) v2.8+ 混导视频/专栏/番剧
+python cli.py "https://www.bilibili.com/video/BV1xxx https://www.bilibili.com/read/cv12345 https://www.bilibili.com/bangumi/play/ss67890" -o my_v280
+
+# 8) 只抓视频，跳过专栏/番剧
+python cli.py --no-fetch-articles --no-fetch-bangumi "https://www.bilibili.com/video/BV1xxx"
 ```
 
 ### 在 Python 里直接用
@@ -273,10 +287,14 @@ python run_web.py --host 0.0.0.0 --port 5050
 ### 单元测试（无需联网）
 
 ```bash
-python -m unittest tests.test_parser -v
+python -m unittest discover tests -v
 ```
 
-覆盖 16 个用例：纯 AV / av 前缀 / BV / 完整 URL / 短链 / 混合输入 / 多行 / 中文混入 / URL 内嵌 av 数字不重复 / 顺序保持 / 去重 等。
+**118 个测试**，覆盖：
+- `tests/test_parser.py`（25 个）：纯 AV / av 前缀 / BV / 完整 URL / 短链 / 混合输入 / 多行 / 中文混入 / URL 内嵌 av 数字不重复 / 顺序保持 / 去重 / 科学记数法 / 6-16 位裸数字边界 / 版权清单回归 / 33 个真实 AV 号回归 / **专栏/番剧/opus URL 解析**（v2.8+ 13 个新增）
+- `tests/test_cache.py`（23 个）：parse_duration / 字段差异化过期 / 失败状态永远新鲜 / 缺失 fetched_at 视为过期 / 持久化 / 损坏 cache 恢复 / **跨 AV/BV 双索引 + 自动升级**
+- `tests/test_exporter.py`（26 个）：CSV/JSON/TXT/XLSX 4 种格式 / dedupe 各种边界 / 先过滤后去重 / **3 类型混合导出 + 3 sheet xlsx**（v2.8+ 13 个新增）
+- `tests/test_article_bangumi.py`（18 个，v2.8 新增）：通用 Cache 对 ArticleInfo/BangumiInfo 的支持 / 双索引（ss+ep）/ 持久化 / 旧 API 兼容
 
 ### 真实数据验证（用同目录的 `../测试数据/`）
 
@@ -338,8 +356,9 @@ bilibili_tool_v2/
 
 - **频率限制**：连续大量请求可能触发 B 站风控。`--delay` 默认 0.6s 比较保守；如果跑 100+ 个视频可以调到 1.0s 稳一点
 - **短链解析**：b23.tv 短链需要先发一次 HEAD 请求才能展开，会多一次网络往返
-- **番剧/合集 URL**：`https://www.bilibili.com/bangumi/play/epXXX` 这种番剧链接目前**不识别**（只能识别 `/video/...` 单视频 URL），会被静默跳过。如果需要支持可以加，但 v2.1 暂未做
-- **失效视频**：B 站 API 只告诉你"不可见"，不会告诉你为什么；想要"原始数据"只能从你自己之前的归档/截图里手动补
+- **专栏正文**：抓专栏正文（`/x/article/detail/content`）需要登录 cookie，本版本**只抓公开字段**（标题/作者/阅读量/点赞/收藏/摘要/封面）。如需正文请加 SESSDATA cookie（v2.8.1+ 计划）
+- **番剧单集 vs 整季**：本版本统一返回**整季的元数据**（title/cover/desc/评分/总集数）。单集 ID（ep）会先转 season_id 再查
+- **失效视频/专栏/番剧**：B 站 API 只告诉你"不可见"，不会告诉你为什么；想要"原始数据"只能从你自己之前的归档/截图里手动补
 - **登录态**：当前是匿名访问，部分"仅会员可见"视频即使存在也拿不到——这种也归到 `not_found`
 
 ---
@@ -355,6 +374,45 @@ bilibili_tool_v2/
 ---
 
 ## 📝  版本历史
+
+### v2.8.0（2026-08-21）—— **专栏 + 番剧支持**
+
+**核心新功能**：
+- **新增**专栏（article）抓取：识别 `bilibili.com/read/cv{数字}`（旧版）和 `bilibili.com/opus/{数字}`（B 站 2024 改版后的新版 URL）两种 URL
+- **新增**番剧（bangumi）抓取：识别 `bilibili.com/bangumi/play/ss{数字}`（整季）和 `.../ep{数字}`（单集）两种 URL。`ep` 形式会自动转 `season_id` 再查
+- **新增**b23 短链自动分类：解析后根据 302 目标 URL 路径自动归类到 `bv` / `article` / `bangumi_ss` / `bangumi_ep` 之一
+- **修复**B 站短链跳转 `m.bilibili.com`（移动版域名）不识别的问题——所有 URL 正则都改为支持任意子域名
+
+**架构升级**：
+- **`Cache` 类通用化**：保持向后兼容（默认 VideoInfo），但可通过 `record_class + key_func` 注入支持任何 dataclass
+- **3 类独立 cache 文件**：`data/cache.json`（视频）+ `cache_article.json`（专栏）+ `cache_bangumi.json`（番剧），各自动态字段 1h 过期，静态 + 失败状态永远缓存
+- **导出器支持多类型**：
+  - xlsx 单文件 3 个 sheet（视频/专栏/番剧）
+  - csv/json/txt 拆 3 个独立文件（`{base}_video.csv` / `{base}_article.csv` / `{base}_bangumi.csv`）
+  - 旧 API（`export_all(videos)`）完全兼容
+- **CLI 新增**：
+  - `--fetch-articles` / `--no-fetch-articles`（默认开）
+  - `--fetch-bangumi` / `--no-fetch-bangumi`（默认开）
+- **Web UI 新增**：
+  - 「抓取专栏」checkbox（默认勾选）
+  - 「抓取番剧」checkbox（默认勾选）
+  - 结果表格加「类型」列（视频/专栏/番剧）
+
+**API 端点**：
+- 视频：`/x/web-interface/view`（不变）
+- 专栏：`/x/article/view?id={cv_id}`（opus_id 数字直接当 cv_id 用）
+- 番剧：`/pgc/view/pc/season?season_id={ss_id}` 或 `?ep_id={ep_id}`
+
+**测试**：74 → **118**（+44 个新测试），全部通过
+
+**新数据模型**：
+- `ArticleInfo`：cv_id / title / author_mid / author_name / view / like / favorite / coin / share / reply / words / ctime / pubtime / summary / banner / url / status / ...
+- `BangumiInfo`：season_id / ep_id / title / alias / type_name / rating_score / rating_count / total_ep / status_text / publish_date / view / favorite / coins / like / share / reply / danmaku / desc / cover / url / status / ...
+
+**已知未做（v2.8.1+ 计划）**：
+- 专栏正文（需 cookie）
+- b23 短链并发展开
+- Web UI 实时显示展开过程
 
 ### v2.7.0（2026-08-17）
 
@@ -422,7 +480,10 @@ bilibili_tool_v2/
 
 - 原 `bilibili_tool.py` 和 `Python批量获取B站视频数据脚本.py` 的作者（都是映月/我自己，这边先前利用AI工具写脚本留下的相关原代码）
 - 对于上海某高校事件 4K 修复版和hibiki相关视频的采集数据——这两份测试数据帮我验证了 80%+ 失效场景下脚本不会崩
-- B 站公开 API（`api.bilibili.com/x/web-interface/view`）
+- B 站公开 API：
+  - `api.bilibili.com/x/web-interface/view`（视频）
+  - `api.bilibili.com/x/article/view`（专栏）
+  - `api.bilibili.com/pgc/view/pc/season`（番剧）
 
 ## ⚠️ 重要声明：
 
