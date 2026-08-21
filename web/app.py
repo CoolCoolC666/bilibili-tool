@@ -1260,10 +1260,12 @@ def _build_provider(
     provider_id: str,
     api_key: str = None,
     interval_ms: int = 250,
+    disable_cache: bool = False,  # v3.1.0+ Q12
 ):
     """根据 provider_id + api_key 构造 provider 实例。
 
     v3.0.9+：interval_ms 透传给 provider（控制翻页间隔，避开 429 / -799）
+    v3.1.0+：disable_cache 透传给 provider（Q12 绕过服务端缓存）
 
     返回 (provider, error_message)：
       - provider: ArchiveProvider 实例 或 None
@@ -1281,7 +1283,10 @@ def _build_provider(
         if provider_id == "self-legacy":
             return SelfLegacyProvider(interval_ms=interval_ms), None
         if provider_id == "uapis.cn":
-            return UapisCnProvider(api_key=api_key or None, interval_ms=interval_ms), None
+            return UapisCnProvider(
+                api_key=api_key or None, interval_ms=interval_ms,
+                disable_cache=disable_cache,
+            ), None
         return None, f"未知 provider: {provider_id!r}"
     except UapiAuthError as e:
         return None, f"密钥错误: {e}"
@@ -1293,6 +1298,7 @@ def _build_chain(
     provider_id: str,
     api_key: str = None,
     interval_ms: int = 250,
+    disable_cache: bool = False,  # v3.1.0+ Q12
 ):
     """根据 provider_id 构造降级链。
 
@@ -1302,6 +1308,7 @@ def _build_chain(
     - "auto" → [self-wbi, uapis.cn(访客), self-legacy]（默认，智能降级）
 
     v3.0.9+：interval_ms 透传给所有 provider（控制翻页间隔）
+    v3.1.0+：disable_cache 透传给所有 uapis.cn provider（Q12 绕过缓存）
 
     返回 (chain, error_message)
     """
@@ -1319,13 +1326,21 @@ def _build_chain(
         elif provider_id == "self-legacy":
             primary = SelfLegacyProvider(interval_ms=interval_ms)
         elif provider_id == "uapis.cn":
-            primary = UapisCnProvider(api_key=api_key or None, interval_ms=interval_ms)
+            primary = UapisCnProvider(
+                api_key=api_key or None, interval_ms=interval_ms,
+                disable_cache=disable_cache,
+            )
         else:
             # "auto" 或其他 → 用 uapis 访客作主路径（受网络影响最小）
-            primary = UapisCnProvider(api_key=api_key or None, interval_ms=interval_ms)
+            primary = UapisCnProvider(
+                api_key=api_key or None, interval_ms=interval_ms,
+                disable_cache=disable_cache,
+            )
         # 构造备选（按"最常用兜底"顺序）
-        uapis_visitor = UapisCnProvider(interval_ms=interval_ms)
-        return AuthorArchiveChain([primary, uapis_visitor, SelfLegacyProvider(interval_ms=interval_ms)]), None
+        uapis_visitor = UapisCnProvider(interval_ms=interval_ms, disable_cache=disable_cache)
+        return AuthorArchiveChain([
+            primary, uapis_visitor, SelfLegacyProvider(interval_ms=interval_ms),
+        ]), None
     except UapiAuthError as e:
         return None, f"密钥错误: {e}"
     except Exception as e:
@@ -1357,6 +1372,8 @@ def author_list():
     interval_ms = int(data.get("interval_ms", 250))
     if interval_ms < 0:
         interval_ms = 0
+    # v3.1.0+ Q12：disable_cache 绕过 15 分钟服务端缓存
+    disable_cache = bool(data.get("disable_cache", False))
 
     try:
         since_dt = None
@@ -1381,7 +1398,10 @@ def author_list():
             max_count = int(max_count)
         timeout = float(data.get("timeout", 10.0))
 
-        chain, err = _build_chain(provider_id, api_key, interval_ms=interval_ms)
+        chain, err = _build_chain(
+            provider_id, api_key,
+            interval_ms=interval_ms, disable_cache=disable_cache,
+        )
         if err:
             return jsonify({"error": err}), 400
 
@@ -1420,6 +1440,7 @@ def author_list():
             "provider": provider_id,
             "has_key": bool(api_key),
             "interval_ms": interval_ms,  # v3.0.9+：回显给前端
+            "disable_cache": disable_cache,  # v3.1.0+：回显
         })
     except ValueError as e:
         return jsonify({"error": f"日期格式错误：{e}"}), 400
@@ -1436,6 +1457,61 @@ def author_list():
 #   - 进度：复用 _DETAIL_JOBS 异步模式（v3.0.4）
 
 _PROFILE_JOBS: Dict[str, dict] = {}
+
+
+# v3.1.0+ 实时额度查询（Q26）
+@app.route("/api/author/usage", methods=["POST"])
+def author_usage():
+    """v3.1.0+：查询 uapis.cn 当前剩余积分 / QPS 状态。
+
+    Body:
+      api_key: 可选（uapis key，无则按访客查）
+      disable_cache: bool（v3.1.0+ Q12）
+
+    返回：
+      {
+        "ok": True,
+        "usage": {...原始 uapis 响应...},
+        "interval_ms": 0,
+        "disable_cache": false,
+      }
+      或失败：
+      {"ok": False, "error": "..."}
+
+    端点：GET https://uapis.cn/api/v1/status/usage
+    文档：https://uapis.cn/docs/api-reference/get-status-usage
+    消耗：0 积分（免费端点，可频繁调用）
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    api_key = (data.get("api_key") or "").strip() or None
+    disable_cache = bool(data.get("disable_cache", False))
+
+    from bilibili_tool.uapi import UapisCnProvider, UapiError
+    try:
+        provider = UapisCnProvider(api_key=api_key, disable_cache=disable_cache)
+        usage = provider.fetch_usage()
+        return jsonify({
+            "ok": True,
+            "usage": usage,
+            "mode": provider.mode,  # "visitor" / "logged_in"
+            "disable_cache": disable_cache,
+        })
+    except UapiError as e:
+        # 友好错误信息（含 docs 跳转链接如果服务端返回了）
+        err_resp = {
+            "ok": False,
+            "error": str(e),
+            "code": e.code,
+            "status_code": e.status_code,
+        }
+        if e.docs:
+            err_resp["docs"] = e.docs
+        return jsonify(err_resp), 500
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": f"查询失败：{e}",
+        }), 500
 
 
 @app.route("/api/author/profile", methods=["POST"])

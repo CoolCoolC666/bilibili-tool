@@ -53,7 +53,8 @@ class UapisCnProvider(ArchiveProvider):
 
     缺点：
       - 数据过第三方服务器（隐私 + 数据主权）
-      - 15 分钟缓存（最新视频可能滞后；命中缓存按半价 0 积分）
+      - 15 分钟缓存（最新视频可能滞后；命中缓存按**半价向下取整**——
+        B 站 5 端点 4 积分 → 命中缓存扣 2 积分；其他 1 积分档 → 0 积分）
       - 第三方服务有倒闭风险
       - 访客额度按 IP 算，切网络会重新计（不稳定）
     """
@@ -100,6 +101,7 @@ class UapisCnProvider(ArchiveProvider):
         sess: Optional[requests.Session] = None,
         timeout: float = 10.0,
         interval_ms: int = 250,  # v3.0.9+ 翻页间隔
+        disable_cache: bool = False,  # v3.1.0+ 绕过 15 分钟服务端缓存（Q12）
     ):
         # 先存 key（优先级 1: 传入；优先级 2: 环境变量）
         if not api_key:
@@ -107,6 +109,12 @@ class UapisCnProvider(ArchiveProvider):
         super().__init__(api_key=api_key, interval_ms=interval_ms)
         # 验证 key 格式（不调远程）—— 没 key 跳过（访客模式合法）
         self._validate_key()
+        # v3.1.0+ Q12：disableCache 绕过服务端缓存
+        # - TypeScript SDK 用 `disableCache: true`（驼峰），其他语言 SDK 不一定支持
+        # - 非 SDK 推荐 URL 加 `_t=<timestamp>` 时间戳（FAQ Q12 原话）
+        # - 服务端缓存键包含查询参数，所以加 _t 能让每次请求都是新键 → 绕过
+        # - 用途：截断重试拿到陈旧缓存时强制重新查上游
+        self.disable_cache = bool(disable_cache)
 
         self.sess = sess or requests.Session()
         self.sess.headers.setdefault("User-Agent", "bilibili_tool_v2/2.10.0 (uapis.cn client)")
@@ -204,11 +212,24 @@ class UapisCnProvider(ArchiveProvider):
 
         端点：GET /api/v1/social/bilibili/userinfo
         文档：https://uapis.cn/docs/api-reference/get-social-bilibili-userinfo
-        单次消耗：2 积分
+        单次消耗：4 积分（AI 服务档，B 站 5 端点同价）
         """
         if not isinstance(uid, int) or uid <= 0:
             raise ValueError(f"uid 必须是正整数，got: {uid!r}")
         return self._request("/social/bilibili/userinfo", {"uid": str(uid)})
+
+    # ---- 端点 6（v3.1.0+）：剩余额度 ----
+
+    def fetch_usage(self) -> dict:
+        """查询 API 端点使用统计（**免费端点，0 积分**）。
+
+        端点：GET /api/v1/status/usage
+        文档：https://uapis.cn/docs/api-reference/get-status-usage
+        作用：返回当前账号/访客的剩余积分、QPS、各端点调用统计
+
+        v3.1.0+ 新增：用于 Web 端"数据源设置"卡显示剩余额度（Q26 推荐）。
+        """
+        return self._request("/status/usage", {})
 
     # ---- 端点 3：单视频详情 ----
 
@@ -295,8 +316,17 @@ class UapisCnProvider(ArchiveProvider):
     # ---- 内部 ----
 
     def _request(self, path: str, params: dict) -> dict:
-        """发起 GET 请求并按状态码/错误码分类抛 UapiError 子类。"""
+        """发起 GET 请求并按状态码/错误码分类抛 UapiError 子类。
+
+        v3.1.0+ Q12：当 disable_cache=True 时，给 params 加 `_t=<ms_timestamp>`
+        让每次请求都是新缓存键，强制绕过 15 分钟服务端缓存。
+        """
         url = f"{self.BASE_URL}{path}"
+        # v3.1.0+ Q12 关闭缓存：URL 加时间戳戳（不影响业务参数）
+        if self.disable_cache:
+            import time
+            params = dict(params)  # 拷贝避免修改上游调用方传入的 dict
+            params["_t"] = str(int(time.time() * 1000))
         try:
             r = self.sess.get(url, params=params, timeout=self.timeout)
         except requests.Timeout as e:
@@ -317,49 +347,94 @@ class UapisCnProvider(ArchiveProvider):
                 status_code=r.status_code,
             ) from e
 
-        # 状态码 → 异常类型映射（参考 uapis.cn 端口示例文档）
+        # v3.1.0+ Q32 兼容：uapis.cn 错误响应有 4 种结构
+        # 1. 标准: {"code": "INVALID_PARAMETER", "message": "...", "details": {...}}
+        # 2. 简化: {"error": "INVALID_PARAMETER", "details": "..."}
+        # 3. 积分不足: {"error": "INSUFFICIENT_CREDITS", "message": "...", "docs": {upgrade, usage}}
+        # 4. 限流类: {"code": 429, "message": "Rate limit exceeded", "limit": 10}
+        # 读取顺序：code（字符串） > error > message（FAQ Q32 推荐）
+        def _extract_code_and_msg() -> tuple:
+            code = data.get("code")
+            if isinstance(code, str) and code:
+                # 结构 1: code 是字符串（最常见）
+                return code, data.get("message", code)
+            err = data.get("error")
+            if isinstance(err, str) and err:
+                # 结构 2/3: 没有 code，用 error 字段
+                msg = data.get("message") or data.get("details") or err
+                return err, msg
+            # 兜底：没有 code 也没有 error
+            return None, data.get("message", "未知错误")
+        code, msg = _extract_code_and_msg()
+        # 额外字段（结构 3 有 docs 跳转链接；结构 4 有 limit）
+        details = data.get("details")
+        docs = data.get("docs")
+        limit = data.get("limit")
+
+        # 状态码 → 异常类型映射（参考 uapis.cn FAQ Q33 错误码表）
         if r.status_code == 200:
             return data
         if r.status_code == 400:
-            # 参数错误
+            # 参数错误 / INVALID_PARAMETER / UNSUPPORTED_FORMAT / FILE_REQUIRED / CONVERSION_FAILED
             raise UapiError(
-                data.get("message", "参数错误"),
-                status_code=400, code=data.get("code"),
+                msg, status_code=400, code=code, details=details,
             )
         if r.status_code == 401:
-            # 鉴权失败（key 错 / 过期）
+            # 鉴权失败（key 错 / 过期 / UNAUTHORIZED / AUTHENTICATION_REQUIRED）
             raise UapiAuthError(
-                data.get("message", "鉴权失败"),
-                status_code=401, code=data.get("code"),
+                msg, status_code=401, code=code, details=details,
+            )
+        if r.status_code == 402:
+            # 账户积分耗尽（仅登录用户，Q16：访客不会遇到 402）
+            raise UapiError(
+                msg, status_code=402, code=code, details=details,
+            )
+        if r.status_code == 403:
+            # 403 CORS_FORBIDDEN / IP not allowed / API path not allowed / ACCESS_DENIED
+            raise UapiError(
+                msg, status_code=403, code=code, details=details,
             )
         if r.status_code == 404:
-            # 资源不存在
+            # 资源不存在（NOT_FOUND / AVATAR_NOT_FOUND / NO_TRACKING_DATA / NO_MATCH）
             raise UapiNotFoundError(
-                data.get("message", "资源不存在"),
-                status_code=404, code=data.get("code"),
+                msg, status_code=404, code=code, details=details,
+            )
+        if r.status_code == 413:
+            # 请求体过大（REQUEST_ENTITY_TOO_LARGE）
+            raise UapiError(
+                msg, status_code=413, code=code, details=details,
             )
         if r.status_code == 429:
-            # 限流（**触发降级**）
-            raise UapiRateLimitError(
-                data.get("message", "请求过于频繁"),
-                status_code=429, code=data.get("code"),
+            # 限流：VISITOR_MONTHLY_QUOTA_EXHAUSTED / SERVICE_BUSY / RATE_LIMIT_EXCEEDED
+            # **触发降级**（除非是 quota_exhausted 永久耗尽——这种情况再降级也浪费）
+            err_cls = UapiError if (code == "VISITOR_MONTHLY_QUOTA_EXHAUSTED") else UapiRateLimitError
+            raise err_cls(
+                msg, status_code=429, code=code, details=details,
             )
         if r.status_code == 500:
-            # 服务器内部错误
+            # INTERNAL_SERVER_ERROR
             raise UapiError(
-                data.get("message", "服务器内部错误"),
-                status_code=500, code=data.get("code"),
+                msg, status_code=500, code=code, details=details,
             )
         if r.status_code == 502:
-            # 网关错误（uapis 上游 B 站挂了）
+            # 上游服务异常（API_ERROR / UPSTREAM_ERROR）
             raise UapiError(
-                data.get("message", "上游服务暂时不可用"),
-                status_code=502, code=data.get("code"),
+                msg, status_code=502, code=code, details=details,
+            )
+        if r.status_code == 503:
+            # SERVICE_UNAVAILABLE
+            raise UapiError(
+                msg, status_code=503, code=code, details=details,
+            )
+        if r.status_code == 504:
+            # 网关超时 / UPSTREAM_TIMEOUT
+            raise UapiError(
+                msg, status_code=504, code=code, details=details,
             )
         # 其他 4xx / 5xx
         raise UapiError(
-            f"HTTP {r.status_code}: {data.get('message', '?')}",
-            status_code=r.status_code, code=data.get("code"),
+            f"HTTP {r.status_code}: {msg}",
+            status_code=r.status_code, code=code, details=details,
         )
 
     def _normalize_archive(self, v: dict) -> dict:

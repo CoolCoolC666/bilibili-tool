@@ -35,17 +35,26 @@ from typing import List, Optional
 # ============================================================================
 
 class UapiError(Exception):
-    """UAPI 调用错误的基类。"""
+    """UAPI 调用错误的基类。
+
+    v3.1.0+ 增强：
+      - 支持 `details` 字段（uapis FAQ Q32 结构 1/2 的额外信息）
+      - 支持 `docs` 字段（结构 3 跳转链接，如积分耗尽时返回 upgrade / usage URL）
+    """
     def __init__(
         self,
         message: str,
         *,
         status_code: Optional[int] = None,
         code: Optional[str] = None,
+        details: Optional[dict] = None,
+        docs: Optional[dict] = None,
     ):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+        self.details = details
+        self.docs = docs
 
 
 class UapiRateLimitError(UapiError):

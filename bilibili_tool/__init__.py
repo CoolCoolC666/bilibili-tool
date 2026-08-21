@@ -96,4 +96,4 @@ __all__ = [
     "filter_valid",
 ]
 
-__version__ = "3.0.9-alpha"
+__version__ = "3.1.0-alpha"

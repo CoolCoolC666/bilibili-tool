@@ -70,9 +70,9 @@ http://127.0.0.1:5050/author    ← 启动 Web 后访问这个路径
 
 | 数据源 | 是否需要 key | QPS | 特点 | 适用 |
 |---|---|---|---|---|
-| **uapis.cn**（默认）| 可选（访客免 key）| 访客 4 / 登录 7 | 国产第三方 + 5 端点 + 访客 1500 积分/月 | **首选**：风控少、积分便宜 |
-| **self-wbi** | 不需要 | 0（受 B 站风控）| 自主 WBI 签名调用 B 站官方端点 | 网络好 + B 站不限流时 |
-| **self-legacy** | 不需要 | 0（受 B 站风控）| 旧端点（无 WBI）| 仅最末位降级 |
+| **uapis.cn**（默认）| 可选（访客免 key）| 访客 4 / 登录 7 | 国产第三方 + 5 端点 + 访客 1500 积分/月（基础接口 1 积分/次；B 站 5 端点 4 积分/次）| **首选**：风控少、积分便宜 |
+| **self-wbi** | 不需要 | 0（受 B 站风控，-799/412 多）| 自主 WBI 签名调用 B 站官方端点 | 网络好 + B 站不限流时 |
+| **self-legacy** | 不需要 | 0（受 B 站风控，5 个 UP 主后必触发 -799）| 旧端点（无 WBI）| 仅最末位降级 |
 | **自动降级链** | — | — | 优先 self-wbi → uapis 访客 → self-legacy | **默认**：自动选最稳的 |
 
 **降级链逻辑**：所选 provider 限流（uapis 429 / B 站 -799）时**自动切换到下一个 provider**。其他错误（鉴权 / 资源不存在 / 网络）直接抛，不降级。
@@ -601,6 +601,7 @@ bilibili_tool_v2/
 - **v3.0.9 翻页间隔是全局值**：不能分端点或分 UP 主。429 没有自动退避（v3.1+ 候选）
 - **没有 429 自动退避**：用户需手动调大 interval（FAQ Q14 推荐 0.5s/1s/2s/4s 指数退避）
 - **CSV 大小限制**：阶段 2 单文件按行读（不一次性加载），但 5000+ 行的 CSV 仍可能慢
+- **⚠ 生产环境不建议直接用访客额度**（uapis FAQ Q40 原文）：1500 积分/月容易耗尽 + 4 QPS 容易触发 429 + 切网络会断档 + 没法追问题账号。**生产环境至少用登录账号（3500 积分/月 + 7 QPS）**
 
 #### ⚠ 截断 + 服务端缓存陷阱（v3.0.9+ 诊断经验）
 
@@ -633,7 +634,6 @@ bilibili_tool_v2/
 ## 🗺  后续计划（AI工具的建议，这边我可能会维护的）
 
 ### v3.1+ 候选（v3.0+ 已实装的）
-- [ ] **`disable_cache` 绕过截断陷阱**（uapis FAQ Q12）：给所有 uapis URL 加 `_t=<timestamp>` 后缀强制绕过缓存，**修复"截断 → 下次请求拿到上次残缺缓存"** 的隐蔽 bug
 - [ ] **429 自动退避**（uapis FAQ Q14）：触发指数退避 0.5s/1s/2s/4s
 - [ ] **按 UP 主维度动态调间隔**：活跃 UP 主慢 / 老 UP 主快
 - [ ] **interval_ms 服务端持久化**：多端共享
@@ -649,6 +649,38 @@ bilibili_tool_v2/
 ---
 
 ## 📝  版本历史
+
+### v3.1.0-alpha（2026-08-22）—— **修复截断陷阱 + 实时额度查询**
+
+**核心新功能 / 修复**：
+
+- **🆕 A. `disableCache` 参数**（uapis FAQ Q12 修复"测不出全量"）：
+  - TypeScript SDK 用 `disableCache: true`（驼峰），**本项目用 URL `_t=<timestamp>` 戳绕过**（非 SDK 推荐方式）
+  - 4 个 web 端点全部接受 `disable_cache` 参数
+  - 前端"数据源设置"卡加 🔓 复选框
+  - localStorage key: `bilibili_tool:uapi_disable_cache`
+  - 解决"截断 → 下次请求拿到上次残缺缓存"的隐蔽 bug
+
+- **🆕 B. 错误响应 4 种结构兼容**（FAQ Q32）：
+  - `_request()` 现在读 4 种结构：标准 `code+message+details` / 简化 `error+details` / 积分不足 `error+docs` / 限流类 `code+limit`
+  - `UapiError` 增强：`details` / `docs` 字段
+  - 区分 18 种错误码（Q33 错误码表）：`INVALID_PARAMETER` / `UNAUTHORIZED` / `INSUFFICIENT_CREDITS` / `CORS_FORBIDDEN` / `VISITOR_MONTHLY_QUOTA_EXHAUSTED` / `IP not allowed` 等
+  - 特殊处理：`VISITOR_MONTHLY_QUOTA_EXHAUSTED` 不触发降级链（再换 provider 也无意义）
+
+- **🆕 D. 实时额度查询 UI**（FAQ Q26）：
+  - 新端点 `/api/author/usage` 调 `GET https://uapis.cn/api/v1/status/usage`（**免费端点，0 积分**）
+  - 前端"数据源设置"卡加 📊 按钮 + 卡片显示访客/资源包/QPS
+  - 包含 `original response` 折叠（识别未字段）
+
+**关键文档修正**：
+- uapis 积分半价：**"半价向下取整"**（B 站 4 积分 → 2 积分），不是"半价 0 积分"
+- uapis 命名澄清：TypeScript SDK 用驼峰 `disableCache`（**不是** `disable_cache`）
+- 积分档位细分：基础 1 积分 / 数据查询 2 / AI 服务 4（**不只是"B 站 5 端点 4 积分"**）
+- 新增 Q40 生产警示："**不建议生产环境直接用访客额度**"（1500/月容易耗尽 + 4 QPS 容易触发 429 + 切网络断档）
+
+**测试**：23 个新测试（`test_uapi_v310.py`）—— 全量 346/346 通过
+
+**8 个新 HTTP 状态码支持**：401 / 402 / 403 / 413 / 429（细分 quota_exhausted）/ 500 / 502 / 503 / 504
 
 ### v3.0.9-alpha（2026-08-21）—— **请求间隔自定义**
 

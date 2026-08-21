@@ -6,6 +6,7 @@
   const $ = (id) => document.getElementById(id);
   const KEY_STORAGE_PREFIX = "bilibili_tool:uapi_key:";   // localStorage key 前缀
   const INTERVAL_STORAGE_KEY = "bilibili_tool:uapi_interval_ms";  // v3.0.9+：翻页间隔
+  const DISABLE_CACHE_KEY = "bilibili_tool:uapi_disable_cache";  // v3.1.0+：Q12 绕过缓存
   const DEFAULT_INTERVAL_MS = 250;  // 4 QPS（uapis 访客档位）
 
   // ----------------------------------------------------------------
@@ -32,6 +33,75 @@
     localStorage.setItem(INTERVAL_STORAGE_KEY, String(v));
     $("interval-status").textContent = `（已保存：${v}ms）`;
     showResult("up-result", `✅ 请求间隔已保存到本地：${v}ms`, false);
+  }
+
+  // v3.1.0+ Q12：disable_cache 全局开关
+  function getDisableCache() {
+    return localStorage.getItem(DISABLE_CACHE_KEY) === "true";
+  }
+
+  // v3.1.0+ Q26：查询剩余额度
+  async function queryUsage() {
+    const k = (CURRENT_PROVIDER_ID === "uapis.cn") ? $("up-api-key").value.trim() : "";
+    const body = { disable_cache: getDisableCache() };
+    if (k) body.api_key = k;
+    $("usage-status").textContent = "（查询中...）";
+    try {
+      const r = await fetch("/api/author/usage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        const err = data.error || r.statusText;
+        $("usage-status").textContent = `（查询失败：${err}）`;
+        showResult("up-result", `❌ 剩余额度查询失败：${err}`, true);
+        return;
+      }
+      // 渲染剩余额度
+      renderUsage(data);
+      $("usage-status").textContent = `（已查询：${new Date().toLocaleTimeString()}）`;
+    } catch (e) {
+      $("usage-status").textContent = `（查询失败：${e.message}）`;
+      showResult("up-result", `❌ 剩余额度查询失败：${e.message}`, true);
+    }
+  }
+
+  function renderUsage(data) {
+    const card = $("usage-card");
+    const content = $("usage-content");
+    if (!data.usage) {
+      card.style.display = "none";
+      return;
+    }
+    card.style.display = "";
+    const u = data.usage;
+    const modeBadge = data.mode === "logged_in"
+      ? '<span class="badge badge-info">登录用户</span>'
+      : '<span class="badge badge-warn">访客模式</span>';
+    // uapis /status/usage 响应字段（参考 FAQ Q26）：
+    // - visitor_quota: { remaining, monthly, used } —— 访客本月剩余
+    // - billing: { quota, balance, ... }
+    // - rate_limit: { qps, ... }
+    let html = `<div>${modeBadge}</div>`;
+    if (u.visitor_quota) {
+      const vq = u.visitor_quota;
+      html += `<div style="margin-top:4px">访客额度：<b>${vq.remaining || 0}</b> / ${vq.monthly || 1500} 积分（已用 ${vq.used || 0}）</div>`;
+    }
+    if (u.billing) {
+      const b = u.billing;
+      html += `<div>资源包剩余：<b>${b.quota || 0}</b> 积分</div>`;
+      if (b.balance !== undefined) {
+        html += `<div>账户余额：<b>${(b.balance / 100).toFixed(2)}</b> 元（${b.balance} 分）</div>`;
+      }
+    }
+    if (u.rate_limit) {
+      html += `<div>当前 QPS：<b>${u.rate_limit.qps || "?"}</b></div>`;
+    }
+    // 兜底：显示原始 JSON（如果有未识别的字段）
+    html += `<details style="margin-top:6px"><summary>查看原始响应</summary><pre style="font-size:0.8em; margin-top:4px; padding:6px; background:#f5f5f5; border-radius:4px; overflow:auto">${escapeHtml(JSON.stringify(u, null, 2))}</pre></details>`;
+    content.innerHTML = html;
   }
 
   async function loadProviders() {
@@ -193,6 +263,8 @@
     const timeout = $("up-timeout").value;
     // v3.0.9+：所有抓取都带 interval_ms（从顶部设置取）
     body.interval_ms = getIntervalMs();
+    // v3.1.0+ Q12：所有抓取都带 disable_cache
+    body.disable_cache = getDisableCache();
     // v3.0.3+：点过"全选"按钮时传 unlimited=true
     if (DATE_PRESET === "all") {
       body.unlimited = true;
@@ -205,7 +277,7 @@
     if (timeout) body.timeout = parseFloat(timeout);
 
     $("up-btn").disabled = true;
-    showResult("up-result", `正在通过 [${CURRENT_PROVIDER_ID}] 拉取列表... (interval=${body.interval_ms}ms)`);
+    showResult("up-result", `正在通过 [${CURRENT_PROVIDER_ID}] 拉取列表... (interval=${body.interval_ms}ms, disable_cache=${body.disable_cache})`);
 
     try {
       const r = await fetch("/api/author/list", {
@@ -444,6 +516,8 @@
     if (max) commonBody.max = parseInt(max, 10);
     // v3.0.9+：interval_ms 优先于 delay（统一用全局间隔）
     commonBody.interval_ms = getIntervalMs();
+    // v3.1.0+ Q12：detail 端点也带 disable_cache
+    commonBody.disable_cache = getDisableCache();
     // 后向兼容：仅在用户没设 interval 时才用 delay
     if (delay && !commonBody.interval_ms) commonBody.delay = parseFloat(delay);
     if (retry) commonBody.retry = parseInt(retry, 10);
@@ -763,11 +837,13 @@
     }
     // v3.0.9+：interval_ms 优先于 delay
     body.interval_ms = getIntervalMs();
+    // v3.1.0+ Q12：profile 也带 disable_cache
+    body.disable_cache = getDisableCache();
     const delay = $("profile-delay").value;
     if (delay && !body.interval_ms) body.delay = parseFloat(delay);
 
     $("profile-btn").disabled = true;
-    showResult("profile-result", `🔄 启动批量抓取任务... (interval=${body.interval_ms}ms)`);
+    showResult("profile-result", `🔄 启动批量抓取任务... (interval=${body.interval_ms}ms, disable_cache=${body.disable_cache})`);
 
     try {
       const r = await fetch("/api/author/profile", {
@@ -826,6 +902,15 @@
   $("up-key-save").addEventListener("click", saveKey);
   $("up-key-clear").addEventListener("click", clearAllKeys);
   $("up-interval-save").addEventListener("click", saveInterval);
+  $("up-usage-btn").addEventListener("click", queryUsage);
+  // v3.1.0+ Q12：disable_cache 复选框 + 实时保存
+  $("up-disable-cache").checked = getDisableCache();
+  $("up-disable-cache").addEventListener("change", (e) => {
+    localStorage.setItem(DISABLE_CACHE_KEY, e.target.checked ? "true" : "false");
+    showResult("up-result", e.target.checked
+      ? "🔓 已开启 disableCache（Q12 绕过服务端缓存，每次都是新查询）"
+      : "🔒 已关闭 disableCache（恢复 15 分钟缓存）", false);
+  });
   // 初始化 interval 输入框
   $("up-interval").value = getIntervalMs();
   $("interval-status").textContent = `（当前：${getIntervalMs()}ms）`;

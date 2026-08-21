@@ -51,6 +51,16 @@
         <span class="key-status" id="interval-status"></span>
       </div>
 
+      <!-- v3.1.0+ Q12 disableCache + 实时额度查询 -->
+      <div class="row" style="margin-top:8px; flex-wrap:wrap; gap:8px">
+        <label class="checkbox" style="display:flex; align-items:center; gap:6px; font-weight:normal">
+          <input id="up-disable-cache" type="checkbox" />
+          <span>🔓 禁用服务端缓存（Q12：避免截断陷阱，每次都是新查询）</span>
+        </label>
+        <button id="up-usage-btn" class="ghost" type="button">📊 查询剩余额度（Q26）</button>
+        <span class="key-status" id="usage-status"></span>
+      </div>
+
       <div class="risk-card" id="risk-card" style="display:none">
         <strong>⚠ 风险提示</strong>
         <ul id="risk-list"></ul>
@@ -61,6 +71,11 @@
           访客 4 QPS = 250ms · 登录 7 QPS = 142ms · 推荐 ≥ 1500ms（保守）·
           429 触发指数退避 0.5s/1s/2s/4s。
         </p>
+        <!-- v3.1.0+ 剩余额度展示（Q26 实时查询结果） -->
+        <div id="usage-card" class="usage-card" style="display:none; margin-top:10px">
+          <strong>📊 剩余额度（uapis /status/usage · 实时）</strong>
+          <div id="usage-content" style="margin-top:6px; font-size:0.9em"></div>
+        </div>
       </div>
     </section>
 
