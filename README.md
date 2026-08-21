@@ -360,6 +360,10 @@ bilibili_tool_v2/
 - **番剧单集 vs 整季**：本版本统一返回**整季的元数据**（title/cover/desc/评分/总集数）。单集 ID（ep）会先转 season_id 再查
 - **失效视频/专栏/番剧**：B 站 API 只告诉你"不可见"，不会告诉你为什么；想要"原始数据"只能从你自己之前的归档/截图里手动补
 - **登录态**：当前是匿名访问，部分"仅会员可见"视频即使存在也拿不到——这种也归到 `not_found`
+- **作者改名**：B 站 up 主**可以改昵称**（改 mid 不变），所以同一作者的 name 可能随时间变化。**做作者历史数据分析请用 `author_mid` 而不是 `author_name` 关联**
+- **v2.8.1+ opus 边界**：
+  - **被转发的内容**：opus API 返回 `item=null, fallback={type:2, id: 原动态id}`。本版本会**降级到 web HTML 拿 `<title>`**（status=ok + error 字段标记降级原因）
+  - **仅粉丝可见**：`ArticleInfo.is_only_fans=True` 时 error 字段会写"up 主设置仅粉丝可见（匿名访问看不到完整内容）"——这是 B 站权限限制，不是工具 bug
 
 ---
 
