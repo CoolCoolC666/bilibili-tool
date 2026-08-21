@@ -14,7 +14,8 @@ from .parser import ParsedItem
 
 
 VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
-ARTICLE_VIEW_URL = "https://api.bilibili.com/x/article/view"
+ARTICLE_VIEW_URL = "https://api.bilibili.com/x/article/view"  # 旧版 cv 端点
+OPUS_DETAIL_URL = "https://api.bilibili.com/x/polymer/web-dynamic/v1/opus/detail"  # v2.8.1+ 新版 opus 端点
 BANGUMI_VIEW_URL = "https://api.bilibili.com/pgc/view/pc/season"
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -169,15 +170,18 @@ class BilibiliVideoFetcher:
 
 
 class BilibiliArticleFetcher:
-    """B 站专栏（read/cv + opus）数据获取器。
+    """B 站专栏（read/cv 旧版 + opus 新版）数据获取器。
 
-    API: GET /x/article/view?id={cv_id}
-    返回: {code, data: {title, author: {mid, name}, stats: {view, like, ...}, ...}}
+    **v2.8.1 重要修复**：opus 新版专栏（2024 B 站改版后的 URL）**不能**用 `/x/article/view` 查，
+    必须走 `/x/polymer/web-dynamic/v1/opus/detail?id={opus_id}`。opus 端点返回嵌套结构：
+      {code: 0, data: {item: {id_str, basic: {title, uid}, modules: [...]}}}
 
-    注意：抓正文（content 字段）需要登录 cookie，本版本只抓公开字段。
+    旧版 cv 仍然走 `/x/article/view`，返回扁平结构。
+
+    注意：抓正文需要登录 cookie，本版本只抓公开字段。
     """
 
-    NO_RETRY_CODES = {-404, 404, 65001, 65002}
+    NO_RETRY_CODES = {-404, 404, 65001, 65002, -352}
 
     def __init__(
         self,
@@ -192,13 +196,23 @@ class BilibiliArticleFetcher:
         self.timeout = timeout
 
     def fetch(self, target) -> ArticleInfo:
-        """target 可以是 ParsedItem (kind=article)，或 cv_id 字符串/数字。"""
+        """target 可以是 ParsedItem (kind=article + is_opus 标志)，或 cv_id 字符串/数字。
+
+        优先根据 target.is_opus 决定走哪个端点：
+          - is_opus=True  → /x/polymer/web-dynamic/v1/opus/detail
+          - is_opus=False → /x/article/view（默认）
+        """
         info = self._build_skeleton(target)
         if info.status == "failed":
             return info
+        # v2.8.1+：根据 is_opus 选端点
+        if info.is_opus:
+            url = OPUS_DETAIL_URL
+        else:
+            url = ARTICLE_VIEW_URL
         try:
             response = self.sess.get(
-                ARTICLE_VIEW_URL, params={"id": info.cv_id}, timeout=self.timeout
+                url, params={"id": info.cv_id}, timeout=self.timeout
             )
             data = response.json()
         except requests.RequestException as e:
@@ -213,7 +227,17 @@ class BilibiliArticleFetcher:
         code = data.get("code")
         info.api_code = code
         if code == 0 and data.get("data"):
-            self._hydrate(info, data["data"])
+            if info.is_opus:
+                # opus 端点：data = {item: {...}, fallback: null}
+                item = data["data"].get("item") if isinstance(data["data"], dict) else None
+                if item:
+                    self._hydrate_opus(info, item)
+                else:
+                    info.status = "failed"
+                    info.error = "opus 响应缺少 item"
+            else:
+                # 旧版 cv 端点：data = {title, author: {mid, name}, stats: {...}, ...}
+                self._hydrate(info, data["data"])
         else:
             info.status = "not_found" if code in self.NO_RETRY_CODES else "failed"
             info.error = explain_code(code)
@@ -251,26 +275,27 @@ class BilibiliArticleFetcher:
         if isinstance(target, ParsedItem):
             raw = target.raw or target.value
             if target.kind == "article":
-                return ArticleInfo(raw_input=raw, input_kind="article", cv_id=target.value)
+                return ArticleInfo(
+                    raw_input=raw, input_kind="article", cv_id=target.value,
+                    is_opus=target.is_opus,  # v2.8.1+ 透传 is_opus
+                )
             return ArticleInfo(raw_input=raw, input_kind=target.kind, status="failed", error="非 article 类型")
         s = str(target).strip()
         if not s:
             return ArticleInfo(raw_input=s, status="failed", error="空输入")
-        return ArticleInfo(raw_input=s, input_kind="raw", cv_id=s)
+        # 字符串/数字：默认按旧版 cv 走（旧 API 兼容）
+        return ArticleInfo(raw_input=s, input_kind="raw", cv_id=s, is_opus=False)
 
     def _hydrate(self, info: ArticleInfo, d: dict) -> None:
+        """旧版 cv 端点的字段映射（/x/article/view 返回扁平结构）。"""
         info.status = "ok"
         info.title = d.get("title", "") or ""
 
-        # 旧版 author 是 dict；新版可能直接给 mid/name 字段
+        # 旧版 author 是 dict
         author = d.get("author") or {}
         if isinstance(author, dict):
             info.author_mid = author.get("mid")
             info.author_name = author.get("name", "") or ""
-        else:
-            # opus 可能是 string 或 author 字段缺失
-            info.author_mid = d.get("mid") or d.get("author_mid")
-            info.author_name = d.get("author_name", "") or d.get("up_name", "") or ""
 
         # 统计
         stats = d.get("stats") or {}
@@ -281,15 +306,14 @@ class BilibiliArticleFetcher:
         info.share = stats.get("share")
         info.reply = stats.get("reply")
 
-        # 备用顶层字段（有些 API 把 stats 拍平到顶层）
+        # 备用顶层字段
         for k in ("view", "like", "favorite", "coin", "share", "reply"):
             if getattr(info, k) is None and d.get(k) is not None:
                 setattr(info, k, d.get(k))
 
         info.words = d.get("words")
         info.summary = d.get("summary", "") or ""
-        # 封面：新版 banner / 旧版 pic
-        info.banner = d.get("banner", "") or d.get("originImageUrls", [""])[0] if d.get("originImageUrls") else (d.get("banner", "") or "")
+        info.banner = d.get("banner", "") or ""
         info.pic = d.get("pic", "") or ""
 
         # 时间
@@ -300,9 +324,83 @@ class BilibiliArticleFetcher:
         elif d.get("publish_time"):
             info.pubtime = datetime.fromtimestamp(d["publish_time"]).strftime("%Y-%m-%d %H:%M:%S")
 
-        # 链接
-        info.url = f"https://www.bilibili.com/read/cv{info.cv_id}" if info.cv_id else ""
-        if not info.url and info.cv_id:
+        # 链接（cv 形式）
+        if info.cv_id:
+            info.url = f"https://www.bilibili.com/read/cv{info.cv_id}"
+
+        info.fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _hydrate_opus(self, info: ArticleInfo, item: dict) -> None:
+        """v2.8.1+：opus 端点的字段映射（嵌套 basic + modules 结构）。"""
+        info.status = "ok"
+        # basic: 标题 + 作者 UID
+        basic = item.get("basic") or {}
+        info.title = basic.get("title", "") or ""
+
+        # modules: 按 module_type 取数据
+        modules = item.get("modules") or []
+        title = ""
+        author_name = ""
+        author_mid = None
+        author_face = ""
+        pub_time_text = ""
+        stat_counts = {}  # {like: n, coin: n, ...}
+        for m in modules:
+            mtype = m.get("module_type")
+            if mtype == "MODULE_TYPE_TITLE":
+                mt = m.get("module_title") or {}
+                title = mt.get("text", "") or title
+            elif mtype == "MODULE_TYPE_AUTHOR":
+                ma = m.get("module_author") or {}
+                author_name = ma.get("name", "") or ""
+                try:
+                    author_mid = int(ma.get("mid", 0)) or None
+                except (TypeError, ValueError):
+                    author_mid = None
+                author_face = ma.get("face", "") or ""
+                pub_time_text = ma.get("pub_time", "") or ""
+            elif mtype == "MODULE_TYPE_STAT":
+                ms = m.get("module_stat") or {}
+                for k in ("like", "coin", "favorite", "comment", "forward"):
+                    sub = ms.get(k) or {}
+                    count = sub.get("count", 0) if isinstance(sub, dict) else 0
+                    try:
+                        stat_counts[k] = int(count)
+                    except (TypeError, ValueError):
+                        stat_counts[k] = 0
+
+        # fallback：modules 缺数据时用 basic
+        if not title:
+            title = basic.get("title", "") or ""
+        if not author_mid:
+            try:
+                author_mid = int(basic.get("uid", 0)) or None
+            except (TypeError, ValueError):
+                author_mid = None
+
+        info.title = title
+        info.author_name = author_name
+        info.author_mid = author_mid
+        info.author_face = author_face
+
+        # 统计字段映射
+        info.like = stat_counts.get("like")
+        info.coin = stat_counts.get("coin")
+        info.favorite = stat_counts.get("favorite")
+        info.reply = stat_counts.get("comment")  # comment 实际是评论数
+        info.forward = stat_counts.get("forward")
+        # opus 端点没有 view / share 字段（默认 None，导出时留空）
+
+        # pub_time_text 例 "2026年04月05日 10:49" —— 存到 pubtime 字段
+        if pub_time_text:
+            info.pubtime = pub_time_text
+
+        # opus 端点没有 summary / words 字段（default 空字符串）
+        info.summary = ""
+        info.words = None
+
+        # 链接（opus 形式）
+        if info.cv_id:
             info.url = f"https://www.bilibili.com/opus/{info.cv_id}"
 
         info.fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

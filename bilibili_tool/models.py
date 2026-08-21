@@ -14,9 +14,10 @@ CODE_MESSAGES = {
     -103: "风控校验失败",
     -104: "撞限流",
     -111: "csrf 校验失败",
+    -352: "风控校验失败（需登录/cookie 或换 IP）",
     -400: "请求错误",
     -403: "权限不足",
-    -404: "视频不存在",
+    -404: "资源不存在（适用于视频/专栏/番剧任一类型）",
     -509: "请求过于频繁（专栏/番剧 API 限流，等几分钟再试）",
     62002: "稿件不可见",
     62004: "稿件审核中",
@@ -94,7 +95,9 @@ class ArticleInfo:
     """单条专栏（read/cv{数字} 旧版 + opus/{数字} 新版）的统一数据结构。
 
     API 端点：
-      - /x/article/view?id={cv_id}        （cv_id 是数字 ID；opus_id 数字直接当 cv 用）
+      - 旧版 cv：/x/article/view?id={cv_id}
+      - 新版 opus：/x/polymer/web-dynamic/v1/opus/detail?id={opus_id}
+        —— opus ID 不能用 /x/article/view 查，必须走新端点
 
     注意：抓正文需要登录 cookie，本版本只抓摘要/标题/作者/统计等公开字段。
     """
@@ -106,10 +109,14 @@ class ArticleInfo:
     # B 站专栏 ID（CV = column view 缩写）
     cv_id: str = ""
 
+    # v2.8.1+：区分 cv 旧版 / opus 新版
+    is_opus: bool = False  # True = opus 形式，走新端点
+
     # 基础信息
     title: str = ""
     author_mid: Optional[int] = None
     author_name: str = ""
+    author_face: str = ""   # v2.8.1+：作者头像（opus 端点有）
 
     # 统计（动态字段，1h 内有效）
     view: Optional[int] = None
@@ -118,6 +125,7 @@ class ArticleInfo:
     coin: Optional[int] = None
     share: Optional[int] = None
     reply: Optional[int] = None
+    forward: Optional[int] = None  # v2.8.1+：opus 端点有转发数
 
     # 字数（静态字段）
     words: Optional[int] = None
@@ -150,7 +158,10 @@ class ArticleInfo:
 
     @property
     def display_title(self) -> str:
-        return self.title or f"(cv{self.cv_id or self.raw_input})"
+        if self.title:
+            return self.title
+        prefix = "opus" if self.is_opus else "cv"
+        return f"({prefix}{self.cv_id or self.raw_input})"
 
 
 @dataclass

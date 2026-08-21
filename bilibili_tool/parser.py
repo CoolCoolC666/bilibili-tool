@@ -36,9 +36,12 @@ class ParsedItem:
     value: str         # "170001" / "BV1xxx" / "cv12345" / "ss12345" / "ep12345"
     raw: str = ""      # 用户原始片段
     from_scientific: bool = False  # 是否由科学记数法转换（精度可能丢失）
+    is_opus: bool = False  # v2.8.1+：article 是否是 opus 新版（决定 API 端点）
 
     def __repr__(self) -> str:
         suffix = " (from scientific)" if self.from_scientific else ""
+        if self.kind == "article" and self.is_opus:
+            suffix += " (opus)"
         return f"ParsedItem({self.kind}={self.value!r}{suffix})"
 
     def __eq__(self, other) -> bool:
@@ -49,10 +52,11 @@ class ParsedItem:
             and self.value == other.value
             and self.raw == other.raw
             and self.from_scientific == other.from_scientific
+            and self.is_opus == other.is_opus
         )
 
     def __hash__(self) -> int:
-        return hash((self.kind, self.value, self.raw, self.from_scientific))
+        return hash((self.kind, self.value, self.raw, self.from_scientific, self.is_opus))
 
 
 # 数字
@@ -175,12 +179,13 @@ def parse_text(text: str, *, allow_bare_numbers: bool = False) -> List[ParsedIte
     for m in RE_ARTICLE.finditer(text):
         if _overlaps(m.span()):
             continue
-        collected.append((m.start(), ParsedItem("article", m.group(1), m.group(0))))
+        collected.append((m.start(), ParsedItem("article", m.group(1), m.group(0), is_opus=False)))
         _mark(m.span())
     for m in RE_OPUS.finditer(text):
         if _overlaps(m.span()):
             continue
-        collected.append((m.start(), ParsedItem("article", m.group(1), m.group(0))))
+        # v2.8.1+：opus 必须走新端点，标记 is_opus=True
+        collected.append((m.start(), ParsedItem("article", m.group(1), m.group(0), is_opus=True)))
         _mark(m.span())
 
     # 1c) 番剧整季 URL（bilibili.com/bangumi/play/ss{数字}）
@@ -297,16 +302,17 @@ def expand_short_urls(
         except Exception:
             final = ""
         # 优先尝试 article/bangumi 子集（避免被 RE_URL 误吞）
-        # 顺序：article > bangumi_ss > bangumi_ep > video
+        # 顺序：opus > article (cv) > bangumi_ss > bangumi_ep > video
         classified: Optional[ParsedItem] = None
         m_article = RE_ARTICLE.search(final)
         m_opus = RE_OPUS.search(final)
         m_ss = RE_BANGUMI_SS.search(final)
         m_ep = RE_BANGUMI_EP.search(final)
-        if m_article:
-            classified = ParsedItem("article", m_article.group(1), it.value)
-        elif m_opus:
-            classified = ParsedItem("article", m_opus.group(1), it.value)
+        if m_opus:
+            # v2.8.1+：opus 必须标记 is_opus，走新端点
+            classified = ParsedItem("article", m_opus.group(1), it.value, is_opus=True)
+        elif m_article:
+            classified = ParsedItem("article", m_article.group(1), it.value, is_opus=False)
         elif m_ss:
             classified = ParsedItem("bangumi_ss", m_ss.group(1), it.value)
         elif m_ep:
