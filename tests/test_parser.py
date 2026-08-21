@@ -1,7 +1,13 @@
 """Parser 单元测试：纯逻辑，不需要联网。"""
 import unittest
+from unittest.mock import patch, MagicMock
 
-from bilibili_tool.parser import parse_text, ParsedItem
+from bilibili_tool.parser import (
+    parse_text,
+    ParsedItem,
+    expand_short_urls,
+    _extract_target_from_html,
+)
 
 
 class TestParseText(unittest.TestCase):
@@ -394,6 +400,220 @@ AV116454968068779"""
         self.assertEqual(len(items), 1)
         expanded = expand_short_urls(items)
         self.assertEqual(expanded[0].kind, "bangumi_ep")
+
+
+class TestParseSpace(unittest.TestCase):
+    """v2.9.0+：space.bilibili.com/{uid} 链接 → kind="up"。"""
+
+    def test_space_basic(self):
+        items = parse_text("https://space.bilibili.com/473965081")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "up")
+        self.assertEqual(items[0].value, "473965081")
+
+    def test_space_with_query(self):
+        items = parse_text("https://space.bilibili.com/660618791?spm_id_from=333.1007.0.0")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "up")
+        self.assertEqual(items[0].value, "660618791")
+
+    def test_space_trailing_slash(self):
+        items = parse_text("https://space.bilibili.com/53456/")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "up")
+        self.assertEqual(items[0].value, "53456")
+
+    def test_space_long_uid(self):
+        items = parse_text("https://space.bilibili.com/1751577265")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "up")
+        self.assertEqual(items[0].value, "1751577265")
+
+    def test_space_multiple(self):
+        text = (
+            "https://space.bilibili.com/473965081?spm_id_from=333.1387.follow.user_card.click "
+            "https://space.bilibili.com/53456?spm_id_from=333.337.0.0"
+        )
+        items = parse_text(text)
+        self.assertEqual(len(items), 2)
+        self.assertEqual([p.kind for p in items], ["up", "up"])
+        self.assertEqual([p.value for p in items], ["473965081", "53456"])
+
+    def test_space_not_confused_with_video(self):
+        """space 链接不含 /video/，不应被识别成视频"""
+        items = parse_text("https://space.bilibili.com/131692216")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "up")
+
+
+class TestExtractTargetFromHtml(unittest.TestCase):
+    """v2.9.0+：从 b23.tv 返回的 HTML 提取真实目标 URL。"""
+
+    def test_canonical_priority_over_og(self):
+        html = (
+            '<html><head>'
+            '<meta property="og:url" content="https://www.bilibili.com/video/BV1og/">'
+            '<link rel="canonical" href="https://www.bilibili.com/video/BV1canonical/">'
+            '</head></html>'
+        )
+        self.assertEqual(
+            _extract_target_from_html(html, "fallback"),
+            "https://www.bilibili.com/video/BV1canonical/",
+        )
+
+    def test_canonical_rel_first(self):
+        html = '<link rel="canonical" href="https://www.bilibili.com/video/BV1abc/">'
+        self.assertEqual(_extract_target_from_html(html, ""), "https://www.bilibili.com/video/BV1abc/")
+
+    def test_canonical_href_first(self):
+        html = '<link href="https://www.bilibili.com/video/BV1xyz/" rel="canonical">'
+        self.assertEqual(_extract_target_from_html(html, ""), "https://www.bilibili.com/video/BV1xyz/")
+
+    def test_og_url_only(self):
+        html = '<meta property="og:url" content="https://www.bilibili.com/video/BV1og/">'
+        self.assertEqual(_extract_target_from_html(html, ""), "https://www.bilibili.com/video/BV1og/")
+
+    def test_bangumi_og_url_bug_falls_back_to_canonical(self):
+        """番剧页 og:url 有缺斜杠 bug（www.bilibili.combangumi），canonical 才对。"""
+        html = (
+            '<meta property="og:url" content="https://www.bilibili.combangumi/play/ep1438464"/>'
+            '<link rel="canonical" href="https://www.bilibili.com/bangumi/play/ep1438464"/>'
+        )
+        self.assertEqual(
+            _extract_target_from_html(html, ""),
+            "https://www.bilibili.com/bangumi/play/ep1438464",
+        )
+
+    def test_empty_returns_fallback(self):
+        self.assertEqual(_extract_target_from_html("", "https://b23.tv/xxx"), "https://b23.tv/xxx")
+
+    def test_no_match_returns_fallback(self):
+        html = "<html><head><title>nothing</title></head></html>"
+        self.assertEqual(_extract_target_from_html(html, "fallback"), "fallback")
+
+
+def _mock_b23_response(final_url: str, html_body: str):
+    """构造一个模拟的 b23.tv GET 响应对象（200 HTML，含 canonical）。"""
+    r = MagicMock()
+    r.url = final_url
+    r.headers = {"Content-Type": "text/html; charset=utf-8"}
+    r.raw.read.return_value = html_body.encode("utf-8")
+    return r
+
+
+class TestExpandShortUrlFromHtml(unittest.TestCase):
+    """v2.9.0+：expand_short_urls 从 HTML 提取（mock，不联网）。"""
+
+    @patch("bilibili_tool.parser.requests.Session")
+    def test_video_short_url(self, mock_sess_cls):
+        sess = MagicMock()
+        mock_sess_cls.return_value = sess
+        html = '<link rel="canonical" href="https://www.bilibili.com/video/BV1mn3t6QE8L/">'
+        sess.get.return_value = _mock_b23_response("https://b23.tv/HXDxEfr", html)
+        items = [ParsedItem("short_url", "https://b23.tv/HXDxEfr", "https://b23.tv/HXDxEfr")]
+        out = expand_short_urls(items)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "bv")
+        self.assertEqual(out[0].value, "BV1mn3t6QE8L")
+
+    @patch("bilibili_tool.parser.requests.Session")
+    def test_opus_short_url(self, mock_sess_cls):
+        sess = MagicMock()
+        mock_sess_cls.return_value = sess
+        html = '<link rel="canonical" href="https://www.bilibili.com/opus/1176715576215601174/">'
+        sess.get.return_value = _mock_b23_response("https://b23.tv/0qnXLMe", html)
+        items = [ParsedItem("short_url", "https://b23.tv/0qnXLMe", "https://b23.tv/0qnXLMe")]
+        out = expand_short_urls(items)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "article")
+        self.assertEqual(out[0].is_opus, True)
+        self.assertEqual(out[0].value, "1176715576215601174")
+
+    @patch("bilibili_tool.parser.requests.Session")
+    def test_bangumi_short_url(self, mock_sess_cls):
+        sess = MagicMock()
+        mock_sess_cls.return_value = sess
+        # 番剧 og:url 有 bug，canonical 才对
+        html = (
+            '<meta property="og:url" content="https://www.bilibili.combangumi/play/ep1438464"/>'
+            '<link rel="canonical" href="https://www.bilibili.com/bangumi/play/ep1438464"/>'
+        )
+        sess.get.return_value = _mock_b23_response("https://b23.tv/ep1438464", html)
+        items = [ParsedItem("short_url", "https://b23.tv/ep1438464", "https://b23.tv/ep1438464")]
+        out = expand_short_urls(items)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "bangumi_ep")
+        self.assertEqual(out[0].value, "1438464")
+
+    @patch("bilibili_tool.parser.requests.Session")
+    def test_redirect_302_fallback(self, mock_sess_cls):
+        """如果 b23.tv 还是 302，r.url 已经是目标（html 为空），走 fallback。"""
+        sess = MagicMock()
+        mock_sess_cls.return_value = sess
+        # r.url 直接是目标（302 后），Content-Type 非 html，不读 body
+        r = MagicMock()
+        r.url = "https://www.bilibili.com/video/BV1mn3t6QE8L/"
+        r.headers = {"Content-Type": "application/json"}
+        sess.get.return_value = r
+        items = [ParsedItem("short_url", "https://b23.tv/xxx", "https://b23.tv/xxx")]
+        out = expand_short_urls(items)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "bv")
+        self.assertEqual(out[0].value, "BV1mn3t6QE8L")
+
+    @patch("bilibili_tool.parser.requests.Session")
+    def test_space_short_url_from_mobile_canonical(self, mock_sess_cls):
+        """手机端短链的 canonical 形式是 space.bilibili.com/{uid}/ → kind='up'。
+
+        实际场景：B 站 APP 分享'个人空间'时复制得到的短链（如 b23.tv/3VlfaxC），
+        服务端跳转后 final URL 是 m.bilibili.com/space/{uid}?plat_id=...，
+        HTML 的 canonical 是 https://space.bilibili.com/{uid}/。
+        """
+        sess = MagicMock()
+        mock_sess_cls.return_value = sess
+        # 招行短链 3VlfaxC 的真实情况
+        html = '<link rel="canonical" href="https://space.bilibili.com/473965081/"/>'
+        sess.get.return_value = _mock_b23_response(
+            "https://m.bilibili.com/space/473965081?plat_id=1&unique_k=3VlfaxC",
+            html,
+        )
+        items = [ParsedItem("short_url", "https://b23.tv/3VlfaxC", "https://b23.tv/3VlfaxC")]
+        out = expand_short_urls(items)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "up")
+        self.assertEqual(out[0].value, "473965081")
+
+    @patch("bilibili_tool.parser.requests.Session")
+    def test_space_short_url_via_m_subdomain(self, mock_sess_cls):
+        """短链 final 直接跳到 m.bilibili.com/space/{uid}（无 query）→ kind='up'"""
+        sess = MagicMock()
+        mock_sess_cls.return_value = sess
+        html = ""  # 没有 canonical
+        sess.get.return_value = _mock_b23_response(
+            "https://m.bilibili.com/space/53456",
+            html,
+        )
+        items = [ParsedItem("short_url", "https://b23.tv/iDBw6N5", "https://b23.tv/iDBw6N5")]
+        out = expand_short_urls(items)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "up")
+        self.assertEqual(out[0].value, "53456")
+
+    @patch("bilibili_tool.parser.requests.Session")
+    def test_space_short_url_via_pc_space(self, mock_sess_cls):
+        """PC 端 space.bilibili.com/{uid} 也能识别"""
+        sess = MagicMock()
+        mock_sess_cls.return_value = sess
+        html = '<link rel="canonical" href="https://space.bilibili.com/3546608094415315/"/>'
+        sess.get.return_value = _mock_b23_response(
+            "https://space.bilibili.com/3546608094415315/",
+            html,
+        )
+        items = [ParsedItem("short_url", "https://b23.tv/f3JDq0T", "https://b23.tv/f3JDq0T")]
+        out = expand_short_urls(items)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].kind, "up")
+        self.assertEqual(out[0].value, "3546608094415315")
 
 
 if __name__ == "__main__":

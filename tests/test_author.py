@@ -177,13 +177,20 @@ class TestFetchPageSeekArc(unittest.TestCase):
 
 
 class TestFetchPageArcSearch(unittest.TestCase):
-    """_fetch_page_arc_search 旧端点解析（mock 响应）。"""
+    """_fetch_page_arc_search 旧端点解析（mock 响应）。v2.9.1+ 已升级为 wbi 鉴权。"""
 
     def setUp(self):
-        self.fetcher = AuthorVideoFetcher()
+        # v2.9.1+：注入预填的 mock wbi cache（不真发 nav 请求）
+        from bilibili_tool.wbi import WbiKeyCache
+        from datetime import datetime
+        mock_cache = WbiKeyCache()
+        mock_cache._img_key = "7cd084941338484aae1ad9425b84077b"
+        mock_cache._sub_key = "4932caff0ff746eab6f01bf08b70ac45"
+        mock_cache._fetched_at = datetime.now()
+        self.fetcher = AuthorVideoFetcher(wbi_cache=mock_cache)
 
     def test_success_response(self):
-        """旧端点：data.list.vlist[]"""
+        """v2.9.1+：wbi 端点响应 → data.list.vlist[]"""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "code": 0,

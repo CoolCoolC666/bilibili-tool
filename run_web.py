@@ -18,11 +18,12 @@ def main() -> int:
     args = parser.parse_args()
 
     from web.app import app
+    # Windows GBK 终端下 emoji 会炸，全部改成 ASCII 字符
     print("=" * 60)
-    print(f"🎬  B 站视频信息抓取工具  Web 版")
-    print(f"🌐  http://{args.host}:{args.port}")
-    print(f"💾  缓存文件: data/cache.json")
-    print(f"📦  输出目录: output/")
+    print(f"[Web]  B 站视频信息抓取工具  Web 版")
+    print(f"[URL]  http://{args.host}:{args.port}")
+    print(f"[Cache] data/cache.json")
+    print(f"[Output] output/")
     print("=" * 60)
     app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
     return 0

@@ -9,6 +9,7 @@
 - https://www.bilibili.com/read/cv12345 -> article
 - https://www.bilibili.com/bangumi/play/ss12345 -> bangumi_ss（整季）
 - https://www.bilibili.com/bangumi/play/ep12345 -> bangumi_ep（单集）
+- https://space.bilibili.com/123456 -> up（按 UP 主抓取，v2.9.0+）
 - https://b23.tv/xxxxxx (短链，需联网解) -> 通过 b23.tv 头跳转后自动分类
 - BV1xxx?p=2 -> bvid + 分 p（当前版本忽略分 p）
 - BV1xxx/?spm_id_from=... -> bvid（忽略 query）
@@ -32,8 +33,8 @@ BV_PREFIX = "BV1"
 
 @dataclass
 class ParsedItem:
-    kind: str          # "av" | "bv" | "short_url" | "article" | "bangumi_ss" | "bangumi_ep"
-    value: str         # "170001" / "BV1xxx" / "cv12345" / "ss12345" / "ep12345"
+    kind: str          # "av" | "bv" | "short_url" | "article" | "bangumi_ss" | "bangumi_ep" | "up"
+    value: str         # "170001" / "BV1xxx" / "cv12345" / "ss12345" / "ep12345" / "uid"
     raw: str = ""      # 用户原始片段
     from_scientific: bool = False  # 是否由科学记数法转换（精度可能丢失）
     is_opus: bool = False  # v2.8.1+：article 是否是 opus 新版（决定 API 端点）
@@ -99,6 +100,14 @@ RE_BANGUMI_SS = re.compile(
 # 番剧单集 URL（bilibili.com/bangumi/play/ep{数字}）
 RE_BANGUMI_EP = re.compile(
     r"https?://(?:[a-z0-9-]+\.)?bilibili\.com/bangumi/play/ep(\d{1,12})",
+    re.IGNORECASE,
+)
+# UP 主空间链接（space.bilibili.com/{uid} 或 m.bilibili.com/space/{uid}）—— v2.9.0+
+# 两种形式：
+#   1. PC 端：https://space.bilibili.com/{uid}
+#   2. 手机端：https://m.bilibili.com/space/{uid}?plat_id=...（短链展开后常见）
+RE_SPACE = re.compile(
+    r"https?://(?:space\.bilibili\.com/|(?:[a-z0-9-]+\.)?bilibili\.com/space/)(\d{1,20})",
     re.IGNORECASE,
 )
 # b23.tv 短链
@@ -202,6 +211,13 @@ def parse_text(text: str, *, allow_bare_numbers: bool = False) -> List[ParsedIte
         collected.append((m.start(), ParsedItem("bangumi_ep", m.group(1), m.group(0))))
         _mark(m.span())
 
+    # 1e) UP 主空间链接（space.bilibili.com/{uid}）—— v2.9.0+ 按 UP 主抓取
+    for m in RE_SPACE.finditer(text):
+        if _overlaps(m.span()):
+            continue
+        collected.append((m.start(), ParsedItem("up", m.group(1), m.group(0))))
+        _mark(m.span())
+
     # 2) 短链 b23.tv —— 单独拎出来，调用方决定要不要解（因为要联网）
     for m in RE_SHORT.finditer(text):
         if _overlaps(m.span()):
@@ -270,18 +286,65 @@ def parse_text(text: str, *, allow_bare_numbers: bool = False) -> List[ParsedIte
     return _dedupe_keep_order([it for _, it in collected])
 
 
+def _extract_target_from_html(html: str, fallback: str = "") -> str:
+    """从 b23.tv 返回的 HTML 里提取真实目标 URL。
+
+    B 站 b23.tv 短链现在（2024 改版后）对 GET 返回 200 HTML（服务端渲染），
+    目标 URL 藏在 <head> 里，优先级：
+      1. <link rel="canonical" href="...">  —— 最可靠
+      2. <meta property="og:url" content="...">  —— 次选（番剧页 og:url 有缺斜杠 bug）
+    都拿不到就退回 fallback（302 场景的 r.url）。
+    """
+    if not html:
+        return fallback
+    # canonical：属性顺序可能是 rel 在前或 href 在前
+    m = re.search(
+        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']',
+        html, re.IGNORECASE,
+    )
+    if not m:
+        m = re.search(
+            r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\']canonical["\']',
+            html, re.IGNORECASE,
+        )
+    if m:
+        return m.group(1)
+    # og:url
+    m = re.search(
+        r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)["\']',
+        html, re.IGNORECASE,
+    )
+    if not m:
+        m = re.search(
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:url["\']',
+            html, re.IGNORECASE,
+        )
+    if m:
+        return m.group(1)
+    return fallback
+
+
 def expand_short_urls(
     items: List[ParsedItem],
     *,
     session: Optional[requests.Session] = None,
     timeout: float = 8.0,
-    user_agent: str = "Mozilla/5.0",
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
 ) -> List[ParsedItem]:
-    """把 short_url 类型的项解析成 BV/AV/专栏/番剧，HEAD 请求跟随 302 即可拿到 Location。
+    """把 short_url 类型的项解析成 BV/AV/专栏/番剧。
 
-    展开后按 302 目标 URL 路径自动分类：
+    B 站 b23.tv 短链现在（2024 改版后）对 GET 返回 200 HTML 而非 302，
+    所以不能只靠 `HEAD + allow_redirects` 拿 `r.url`，而要从 HTML 里提取
+    `<link rel="canonical">` / `<meta property="og:url">` 里的真实地址。
+    （优先 canonical，因为番剧页的 og:url 存在缺斜杠 bug。）
+
+    展开后按目标 URL 路径自动分类：
       - /video/...   -> kind = "bv" / "av"
       - /read/cv...  -> kind = "article"
+      - /opus/...    -> kind = "article"（is_opus=True）
       - /bangumi/play/ss... -> kind = "bangumi_ss"
       - /bangumi/play/ep... -> kind = "bangumi_ep"
 
@@ -291,23 +354,35 @@ def expand_short_urls(
         return items
     sess = session or requests.Session()
     sess.headers.setdefault("User-Agent", user_agent)
+    sess.headers.setdefault("Referer", "https://www.bilibili.com/")
     out: List[ParsedItem] = []
     for it in items:
         if it.kind != "short_url":
             out.append(it)
             continue
+        final = ""
+        html = ""
         try:
-            r = sess.head(it.value, allow_redirects=True, timeout=timeout)
+            # GET + 只读前 64KB（够拿到 <head> 里的 canonical/og:url）
+            r = sess.get(it.value, allow_redirects=True, timeout=timeout, stream=True)
             final = r.url or ""
+            if "text/html" in (r.headers.get("Content-Type") or ""):
+                chunk = r.raw.read(65536, decode_content=True)
+                html = chunk.decode("utf-8", errors="ignore")
+            r.close()
         except Exception:
             final = ""
+            html = ""
+        # 优先从 HTML 提取真实目标 URL（canonical / og:url），兜底用 r.url
+        target = _extract_target_from_html(html, final)
         # 优先尝试 article/bangumi 子集（避免被 RE_URL 误吞）
-        # 顺序：opus > article (cv) > bangumi_ss > bangumi_ep > video
+        # 顺序：opus > article (cv) > bangumi_ss > bangumi_ep > space > video
         classified: Optional[ParsedItem] = None
-        m_article = RE_ARTICLE.search(final)
-        m_opus = RE_OPUS.search(final)
-        m_ss = RE_BANGUMI_SS.search(final)
-        m_ep = RE_BANGUMI_EP.search(final)
+        m_article = RE_ARTICLE.search(target)
+        m_opus = RE_OPUS.search(target)
+        m_ss = RE_BANGUMI_SS.search(target)
+        m_ep = RE_BANGUMI_EP.search(target)
+        m_space = RE_SPACE.search(target)
         if m_opus:
             # v2.8.1+：opus 必须标记 is_opus，走新端点
             classified = ParsedItem("article", m_opus.group(1), it.value, is_opus=True)
@@ -317,9 +392,13 @@ def expand_short_urls(
             classified = ParsedItem("bangumi_ss", m_ss.group(1), it.value)
         elif m_ep:
             classified = ParsedItem("bangumi_ep", m_ep.group(1), it.value)
+        elif m_space:
+            # v2.9.0+：手机端短链常跳到 space.bilibili.com/{uid}
+            # （canonical 形式如 https://space.bilibili.com/473965081/）
+            classified = ParsedItem("up", m_space.group(1), it.value)
         else:
             # 退回 video 分类
-            parsed = parse_text(final)
+            parsed = parse_text(target)
             if parsed:
                 classified = parsed[0]
         if classified is not None:

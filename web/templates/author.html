@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>按 UP 主抓取视频 · B 站信息抓取工具 · v3.0+</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header>
+    <h1>📋 按 UP 主抓取视频（v3.0+ UAPI 集成）</h1>
+    <p class="subtitle">数据源可切换：自主 WBI / uapis.cn（访客或登录） / 旧端点（限流降级）</p>
+    <nav class="topnav">
+      <a href="/">视频/专栏/番剧</a>
+      <a href="/author">按 UP 主抓取</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- v3.0+ 数据源设置 -->
+    <section class="card provider-card">
+      <h2>⚙ 数据源设置 <span class="provider-status" id="provider-status">未选择</span></h2>
+      <p class="hint">
+        v3.0+ 新增：可选 4 种数据源。降级链：所选 provider 限流时自动切换到下一个。
+        API key <strong>只存浏览器 localStorage</strong>，不上传服务器。
+      </p>
+
+      <div class="grid">
+        <label>
+          数据源
+          <select id="up-provider">
+            <option value="">加载中…</option>
+          </select>
+        </label>
+        <label id="up-key-label" style="display:none">
+          API Key（可选）
+          <input id="up-api-key" type="password" placeholder="Bearer uapi-xxxxxx（留空用访客模式）" />
+        </label>
+        <!-- v3.0.9+ 请求间隔：所有 4 个端点都受这个值影响 -->
+        <label>
+          请求间隔 (ms)
+          <input id="up-interval" type="number" min="0" step="50" value="250" />
+        </label>
+      </div>
+
+      <div class="row" style="margin-top:8px">
+        <button id="up-key-save" class="ghost" type="button">💾 保存到本地</button>
+        <button id="up-key-clear" class="ghost" type="button">🗑 清除本地缓存</button>
+        <button id="up-interval-save" class="ghost" type="button">💾 保存间隔</button>
+        <span class="key-status" id="key-status"></span>
+        <span class="key-status" id="interval-status"></span>
+      </div>
+
+      <div class="risk-card" id="risk-card" style="display:none">
+        <strong>⚠ 风险提示</strong>
+        <ul id="risk-list"></ul>
+        <p class="risk-extra" id="risk-extra"></p>
+        <!-- v3.0.9+：档位推荐 + FAQ 引用 -->
+        <p class="hint" id="interval-hint" style="margin-top:8px">
+          ⏱ 翻页间隔参考（uapis FAQ Q13/Q15）：
+          访客 4 QPS = 250ms · 登录 7 QPS = 142ms · 推荐 ≥ 1500ms（保守）·
+          429 触发指数退避 0.5s/1s/2s/4s。
+        </p>
+      </div>
+    </section>
+
+    <!-- 阶段 1 -->
+    <section class="card">
+      <h2>① 阶段 1：拉取 UP 主视频列表</h2>
+      <p class="hint">支持：UP 主 UID（纯数字）/ space 链接 / 手机端短链（b23.tv）。多个 UP 主用空格或换行分隔。</p>
+      <textarea id="up-input" rows="4" placeholder="示例（可任意组合）：
+473965081
+https://space.bilibili.com/660618791
+https://b23.tv/3VlfaxC
+https://b23.tv/f3JDq0T"></textarea>
+
+      <details class="options">
+        <summary>高级选项</summary>
+        <div class="grid">
+          <label>最近 N 天 <input id="up-days" type="number" min="0" placeholder="7" /></label>
+          <label>起始日期 <input id="up-since" type="text" placeholder="YYYY-MM-DD" /></label>
+          <label>结束日期 <input id="up-until" type="text" placeholder="YYYY-MM-DD" /></label>
+          <label>最多条数 <input id="up-max" type="number" min="0" placeholder="不限" /></label>
+          <label>请求超时 (秒) <input id="up-timeout" type="number" step="0.5" value="10" /></label>
+        </div>
+        <div class="row" style="margin-top:10px; flex-wrap:wrap; gap:6px">
+          <span class="hint" style="margin-right:6px">📅 日期快捷:</span>
+          <button class="ghost" type="button" data-date-preset="7">近 7 天</button>
+          <button class="ghost" type="button" data-date-preset="30">近 30 天</button>
+          <button class="ghost" type="button" data-date-preset="90">近 90 天</button>
+          <button class="ghost" type="button" data-date-preset="all">📅 全部时间（全选）</button>
+          <span class="hint" id="up-date-preset-status" style="margin-left:8px"></span>
+        </div>
+        <p class="hint" style="margin-top:8px">📌 优先级：since/until 显式日期 &gt; days &gt; 默认 7 天</p>
+      </details>
+
+      <button id="up-btn" class="primary">拉取列表 → 导出 CSV</button>
+      <div id="up-result" class="result"></div>
+    </section>
+
+    <!-- 阶段 2 -->
+    <section class="card">
+      <h2>② 阶段 2：从 CSV 抓取视频详情
+        <span class="cache-info" id="cache-info">缓存: --</span>
+      </h2>
+      <p class="hint">
+        选择阶段 1 导出的 CSV 文件（位于 output/ 目录），按抓取详情导出 XLSX（v3.0.1+ 默认存到 output/xlsx/）。
+        <strong>v3.0.7+：支持多选（按住 Ctrl/Shift 点多个文件）批量抓取</strong>。
+      </p>
+
+      <div class="row" style="margin-bottom:8px">
+        <button id="detail-refresh" class="ghost" type="button">刷新列表</button>
+        <button id="detail-select-all" class="ghost" type="button">✓ 全选所有 author_*.csv</button>
+        <button id="detail-select-none" class="ghost" type="button">✗ 全不选</button>
+        <button id="detail-delete" class="ghost danger" type="button" disabled>🗑 删除选中</button>
+        <button id="detail-open-folder" class="ghost" type="button">📂 在文件管理器中打开</button>
+        <span class="cache-info" id="detail-selected-info" style="margin-left:auto">已选 0 个</span>
+      </div>
+
+      <select id="detail-file" multiple size="8" style="width:100%; height:auto">
+        <option value="">-- 加载中 --</option>
+      </select>
+
+      <details class="options">
+        <summary>高级选项</summary>
+        <div class="grid">
+          <label>最多条数（每 CSV）<input id="detail-max" type="number" min="0" placeholder="不限" /></label>
+          <label>请求间隔 (秒) <input id="detail-delay" type="number" step="0.1" value="0.6" /></label>
+          <label>重试次数 <input id="detail-retry" type="number" min="0" max="5" value="2" /></label>
+          <label>请求超时 (秒) <input id="detail-timeout" type="number" step="0.5" value="10" /></label>
+        </div>
+      </details>
+
+      <button id="detail-btn" class="primary" disabled>抓取详情 → 导出 XLSX</button>
+      <div class="row" style="margin-top:8px">
+        <button id="cache-clear" class="ghost" type="button" title="删除 data/cache.json 等 3 类缓存">🗑 清空所有缓存（防干扰）</button>
+        <span class="cache-stats" id="cache-stats"></span>
+      </div>
+
+      <details class="options" style="margin-top:14px">
+        <summary>🗑 批量删除文件（路径输入 + 通配符）</summary>
+        <p class="hint" style="margin-top:8px">
+          每行一个路径，支持通配符 <code>*</code> / <code>?</code> / <code>[seq]</code>。
+          例：<code>author_53456_*.csv</code>、<code>xlsx/author_detail_*.xlsx</code>、<code>author_473965081_20260821_191946.csv</code>
+        </p>
+        <textarea id="batch-delete-paths" rows="3" placeholder="一行一个路径，例如：
+author_53456_*.csv
+author_483307278_20260821_*.csv
+xlsx/author_detail_53456_*.xlsx"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button id="batch-delete-btn" class="ghost danger" type="button">🗑 删除这些（批量）</button>
+          <button id="batch-delete-clear" class="ghost" type="button">清空输入</button>
+          <span class="cache-stats" id="batch-delete-status"></span>
+        </div>
+      </details>
+
+      <div id="detail-result" class="result"></div>
+    </section>
+
+    <!-- v3.0.6+ UP 主主页信息批量抓取 -->
+    <section class="card">
+      <h2>③ UP 主主页信息批量抓取（v3.0.6+）
+        <span class="badge badge-info" style="margin-left:8px">uapis.cn 专属</span>
+      </h2>
+      <p class="hint">
+        抓取每个 UP 主的<strong>主页元数据</strong>（昵称 / 等级 / 粉丝数 / 投稿数 / 签名 / VIP 状态），
+        批量导出 <code>profiles_*.csv</code>（output/）和 <code>profiles_*.xlsx</code>（output/xlsx/）。
+        数据源：uapis.cn（当前唯一支持 userinfo 的 provider）。
+      </p>
+      <textarea id="profile-input" rows="4" placeholder="输入多个 UP 主（UID / space 链接 / b23.tv 短链），每行一个：
+53456
+https://space.bilibili.com/483307278
+https://b23.tv/3VlfaxC"></textarea>
+
+      <details class="options">
+        <summary>高级选项</summary>
+        <div class="grid">
+          <label>请求间隔 (秒) <input id="profile-delay" type="number" step="0.1" value="0.3" /></label>
+        </div>
+      </details>
+
+      <button id="profile-btn" class="primary">批量抓取主页 → 导出 CSV + XLSX</button>
+      <div id="profile-result" class="result"></div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='author.js') }}"></script>
+</body>
+</html>

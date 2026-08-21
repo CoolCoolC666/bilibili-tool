@@ -56,10 +56,11 @@ def _read_targets(args) -> str:
         return " ".join(args.text)
     if not sys.stdin.isatty():
         return sys.stdin.read()
-    print("💡 提示: 粘贴 AV/BV/URL/短链/专栏/番剧（空格、换行都行），Ctrl+D / 回车结束。")
+    print("💡 提示: 粘贴 AV/BV/URL/短链/专栏/番剧/UP主空间（空格、换行都行），Ctrl+D / 回车结束。")
     print("   例: BV1FpLU62EZW 170001 https://www.bilibili.com/video/BV1xxx")
     print("   例: https://www.bilibili.com/read/cv12345 https://www.bilibili.com/bangumi/play/ss67890")
-    print("   例: https://b23.tv/HXDxEfr   (短链自动展开 + 自动分类)\n")
+    print("   例: https://b23.tv/HXDxEfr   (短链自动展开 + 自动分类)")
+    print("   例: https://space.bilibili.com/473965081   (按 UP 主抓取，配合 --days/--max)\n")
     return input("👉 输入待抓取的 ID / 链接: ")
 
 
@@ -69,7 +70,144 @@ def _print_progress(i: int, total: int, info) -> None:
     print(f"  [{i:3d}/{total}] {marker} {snippet:<28}  [{info.status}{'/' + str(info.api_code) if info.api_code is not None else ''}]")
 
 
+# v2.9.0+ subparsers 兼容层：检测第一个非 flag 参数是否是 subcommand
+SUBCOMMANDS = {"author", "video", "article", "bangumi"}
+
+
+def _build_subparser_parser():
+    """v2.9.0+ subparsers 入口（新风格 CLI）。
+
+    用法：
+        python cli.py author list --from-up 473965081 --days 7
+        python cli.py author detail --from-file output/author_473965081_xxx.csv
+        python cli.py video BV1xxx av170001
+        python cli.py article https://www.bilibili.com/read/cv12345
+        python cli.py bangumi https://www.bilibili.com/bangumi/play/ss67890
+    """
+    parser = argparse.ArgumentParser(
+        description="B 站信息抓取工具（subparsers 模式）",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
+
+    # ===== author =====
+    a = sub.add_parser("author", help="按 UP 主抓取（v2.9.0+）")
+    a_sub = a.add_subparsers(dest="author_cmd", required=True, metavar="<list|detail>")
+
+    a_list = a_sub.add_parser("list", help="阶段 1：拉取视频链接列表，导出 CSV")
+    a_list.add_argument("input", nargs="*", help="可选：UP 主 UID 或 space 链接（可多个）")
+    a_list.add_argument("--from-up", type=int, default=None, metavar="UID",
+                       help="按 UP 主 UID 抓取")
+    a_list.add_argument("--days", type=int, default=None, metavar="N",
+                       help="最近 N 天（默认 7）")
+    a_list.add_argument("--max", type=int, default=None, metavar="M",
+                       help="最多抓多少条")
+    a_list.add_argument("--since", type=str, default=None, metavar="YYYY-MM-DD")
+    a_list.add_argument("--until", type=str, default=None, metavar="YYYY-MM-DD")
+    a_list.add_argument("--list-out-dir", default=DEFAULT_OUT, help="输出目录")
+    a_list.add_argument("--timeout", type=float, default=10.0)
+    a_list.add_argument("--delay", type=float, default=0.3,
+                       help="分页间隔（默认 0.3s）")
+
+    a_detail = a_sub.add_parser("detail", help="阶段 2：从 CSV 抓取视频详情，导出 XLSX")
+    a_detail.add_argument("--from-file", type=str, required=True, metavar="CSV",
+                          help="阶段 1 导出的 CSV 文件路径")
+    a_detail.add_argument("--detail-out-dir", default=DEFAULT_OUT)
+    a_detail.add_argument("--max", type=int, default=None)
+    a_detail.add_argument("--delay", type=float, default=0.6)
+    a_detail.add_argument("--retry", type=int, default=2)
+    a_detail.add_argument("--timeout", type=float, default=10.0)
+
+    # ===== video / article / bangumi（占位，v2.10 完整迁移）=====
+    for kind, label in [("video", "视频"), ("article", "专栏"), ("bangumi", "番剧")]:
+        p = sub.add_parser(kind, help=f"抓取 {label}（占位：请用现有扁平 CLI 完整功能）")
+        p.add_argument("targets", nargs="*", help="BV/AV 号 / URL / 短链")
+
+    return parser
+
+
+def _run_subcommand(argv):
+    """subparsers 模式入口。"""
+    parser = _build_subparser_parser()
+    args = parser.parse_args(argv)
+    from datetime import datetime as _dt
+
+    if args.cmd == "author":
+        if args.author_cmd == "list":
+            from bilibili_tool.author import AuthorVideoFetcher
+            from bilibili_tool.author_list import AuthorListExporter
+            # 收集 uid：--from-up + 位置参数
+            uids = []
+            if args.from_up:
+                uids.append(args.from_up)
+            for tok in args.input:
+                # 纯数字或 space 链接
+                if tok.isdigit():
+                    uids.append(int(tok))
+                else:
+                    # space 链接
+                    import re
+                    m = re.search(r"space\.bilibili\.com/(\d+)", tok)
+                    if m:
+                        uids.append(int(m.group(1)))
+            uids = list(dict.fromkeys(uids))
+            if not uids:
+                parser.error("author list 需要 --from-up 或 space 链接 / 纯数字 UID")
+                return 1
+            since_dt = _dt.strptime(args.since, "%Y-%m-%d") if args.since else None
+            until_dt = _dt.strptime(args.until, "%Y-%m-%d") if args.until else None
+            days = args.days if args.days is not None else (7 if since_dt is None else None)
+            af = AuthorVideoFetcher(timeout=args.timeout)
+            exporter = AuthorListExporter(af, output_dir=args.list_out_dir)
+            total = 0
+            for uid in uids:
+                print(f"\n[author list] mid={uid}, days={days}, max={args.max}")
+                try:
+                    path, count = exporter.export(
+                        uid, days=days, max_count=args.max,
+                        since=since_dt, until=until_dt,
+                    )
+                    print(f"  -> {count} 条 -> {path}")
+                    total += count
+                except Exception as e:
+                    print(f"  [!] 失败: {e}")
+            print(f"\n完成：{total} 条")
+            return 0
+
+        if args.author_cmd == "detail":
+            from bilibili_tool.fetcher import BilibiliVideoFetcher
+            from bilibili_tool.author_detail import AuthorDetailExporter
+            vfetcher = BilibiliVideoFetcher(
+                max_retries=args.retry,
+                timeout=args.timeout,
+            )
+            exporter = AuthorDetailExporter(
+                vfetcher, output_dir=args.detail_out_dir, delay=args.delay,
+            )
+            try:
+                path, ok, fail = exporter.export(args.from_file, max_count=args.max)
+            except Exception as e:
+                print(f"[!] 阶段 2 失败：{e}")
+                return 1
+            print(f"\n[author detail] 成功 {ok} / 失败 {fail} -> {path}")
+            return 0
+
+    # 占位：video / article / bangumi → 提示用现有 CLI
+    if args.cmd in ("video", "article", "bangumi"):
+        print(f"[i] '{args.cmd}' 暂未迁移到 subparsers，请用现有扁平 CLI：")
+        print(f"    python cli.py {' '.join(args.targets)}")
+        return 0
+
+    parser.print_help()
+    return 1
+
+
 def main(argv=None) -> int:
+    # v2.9.0+ subparsers 兼容层：如果 argv 含 subcommand，转到新风格
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] in SUBCOMMANDS:
+        return _run_subcommand(argv)
+
     parser = argparse.ArgumentParser(
         description="B 站信息抓取工具（支持视频 / 专栏 / 番剧 + 短链 + 缓存 + 断点续传）"
     )
@@ -153,7 +291,9 @@ def main(argv=None) -> int:
         help=(
             "按 UP 主 UID（mid）抓取其所有投稿视频。\n"
             "配合 --days / --max / --since / --until 使用。\n"
-            "例：--from-up 3546672833497872 --days 7"
+            "例：--from-up 3546672833497872 --days 7\n"
+            "也可以直接贴 space 链接（无需 --from-up）：\n"
+            "例：python cli.py https://space.bilibili.com/473965081 --days 7"
         ),
     )
     author.add_argument(
@@ -190,6 +330,42 @@ def main(argv=None) -> int:
         default=None,
         metavar="YYYY-MM-DD",
         help="配合 --from-up 使用：结束日期（不包含）",
+    )
+    author.add_argument(
+        "--author-list",
+        action="store_true",
+        help=(
+            "v2.9.0+ 阶段 1：只拉 UP 主视频链接列表 + 导出 CSV（不抓详情）。\n"
+            "配合 --from-up 或粘贴 space 链接使用。\n"
+            "例：python cli.py --author-list --from-up 473965081 --days 7\n"
+            "输出：output/author_<uid>_<时间戳>.csv"
+        ),
+    )
+    author.add_argument(
+        "--list-out-dir",
+        default=DEFAULT_OUT,
+        help="阶段 1 列表 CSV 输出目录（默认 output/）",
+    )
+    author.add_argument(
+        "--author-detail",
+        action="store_true",
+        help=(
+            "v2.9.0+ 阶段 2：从阶段 1 导出的 CSV 抓取视频详情 + 导出 XLSX。\n"
+            "配合 --from-file 使用。\n"
+            "例：python cli.py --author-detail --from-file output/author_473965081_xxx.csv"
+        ),
+    )
+    author.add_argument(
+        "--from-file",
+        type=str,
+        default=None,
+        metavar="CSV",
+        help="阶段 1 导出的 CSV 文件路径（配合 --author-detail 使用）",
+    )
+    author.add_argument(
+        "--detail-out-dir",
+        default=DEFAULT_OUT,
+        help="阶段 2 XLSX 输出目录（默认 output/）",
     )
 
     cache = parser.add_argument_group("缓存")
@@ -233,10 +409,49 @@ def main(argv=None) -> int:
     raw_text = _read_targets(args)
     parsed = parse_text(raw_text, allow_bare_numbers=args.allow_bare_numbers)
 
-    # 1b) v2.9.0+：按 UP 主 UID 抓取（如果给了 --from-up）
+    # 1a) v2.9.0+ 阶段 1：--author-list 只导出 UP 主视频列表 CSV
+    #     提前拦截，列表阶段不需要走"抓详情"流程
+    from bilibili_tool.author import AuthorVideoFetcher
+    from bilibili_tool.author_list import AuthorListExporter
+    from bilibili_tool.author_detail import AuthorDetailExporter
+    from datetime import datetime as _dt
+
+    # 阶段 2 拦截：--author-detail --from-file X.csv
+    #     提前拦截，从 CSV 抓详情，导出 XLSX 后 return
+    if args.author_detail:
+        if not args.from_file:
+            print("[!] --author-detail 需要配合 --from-file 指定阶段 1 导出的 CSV")
+            return 1
+        from bilibili_tool.fetcher import BilibiliVideoFetcher
+        vfetcher = BilibiliVideoFetcher(
+            max_retries=args.retry,
+            timeout=args.timeout,
+        )
+        exporter = AuthorDetailExporter(vfetcher, output_dir=args.detail_out_dir, delay=args.delay)
+        try:
+            path, ok, fail = exporter.export(args.from_file, max_count=args.max)
+        except Exception as e:
+            print(f"[!] 阶段 2 失败：{e}")
+            return 1
+        print(f"\n🎉 阶段 2 完成：成功 {ok} 条，失败 {fail} 条 → {path}")
+        return 0
+
+    # 收集所有要抓的 uid：--from-up 显式指定 + parse 出来的 space 链接
+    up_uids: list = []
     if args.from_up:
-        from bilibili_tool.author import AuthorVideoFetcher
-        from datetime import datetime as _dt
+        up_uids.append(args.from_up)
+    for p in parsed:
+        if p.kind == "up":
+            try:
+                up_uids.append(int(p.value))
+            except ValueError:
+                pass
+    up_uids = list(dict.fromkeys(up_uids))
+
+    if args.author_list:
+        if not up_uids:
+            print("[!] --author-list 需要指定 UP 主（--from-up UID 或 space 链接）")
+            return 1
         since_dt = None
         until_dt = None
         if args.since:
@@ -252,17 +467,59 @@ def main(argv=None) -> int:
                 print(f"[!] --until 格式错误：{args.until!r}，应为 YYYY-MM-DD")
                 return 1
         days = args.days if args.days is not None else (7 if since_dt is None else None)
-        print(f"\n🎯 按 UP 主 UID 抓取：mid={args.from_up}, days={days}, max={args.max}, since={args.since}, until={args.until}")
-        try:
-            af = AuthorVideoFetcher(timeout=args.timeout)
-            author_items = af.fetch_author_videos(
-                args.from_up, days=days, max_count=args.max,
-                since=since_dt, until=until_dt,
-            )
-            print(f"   抓取到 {len(author_items)} 个视频")
-        except Exception as e:
-            print(f"[!] 按 UP 主抓取失败：{e}")
-            return 1
+
+        af = AuthorVideoFetcher(timeout=args.timeout)
+        exporter = AuthorListExporter(af, output_dir=args.list_out_dir)
+        total = 0
+        for uid in up_uids:
+            print(f"\n📋 阶段 1：拉取 UP 主 {uid} 的视频列表（days={days}, since={args.since}, until={args.until}）")
+            try:
+                path, count = exporter.export(
+                    uid, days=days, max_count=args.max,
+                    since=since_dt, until=until_dt,
+                )
+                print(f"   ✅ 导出 {count} 条 → {path}")
+                total += count
+            except Exception as e:
+                print(f"   [!] UP 主 {uid} 拉取失败：{e}")
+        print(f"\n🎉 阶段 1 完成，共导出 {total} 条视频链接。")
+        return 0
+
+    # 1b) v2.9.0+：按 UP 主 UID 抓取（--from-up flag + 输入里的 space 链接）
+    if up_uids:
+        since_dt = None
+        until_dt = None
+        if args.since:
+            try:
+                since_dt = _dt.strptime(args.since, "%Y-%m-%d")
+            except ValueError:
+                print(f"[!] --since 格式错误：{args.since!r}，应为 YYYY-MM-DD")
+                return 1
+        if args.until:
+            try:
+                until_dt = _dt.strptime(args.until, "%Y-%m-%d")
+            except ValueError:
+                print(f"[!] --until 格式错误：{args.until!r}，应为 YYYY-MM-DD")
+                return 1
+        days = args.days if args.days is not None else (7 if since_dt is None else None)
+
+        # 去掉 parsed 里的 kind="up"（会被 author_items 替换）
+        parsed = [p for p in parsed if p.kind != "up"]
+
+        af = AuthorVideoFetcher(timeout=args.timeout)
+        author_items: list = []
+        for uid in up_uids:
+            print(f"\n🎯 按 UP 主 UID 抓取：mid={uid}, days={days}, max={args.max}, since={args.since}, until={args.until}")
+            try:
+                items = af.fetch_author_videos(
+                    uid, days=days, max_count=args.max,
+                    since=since_dt, until=until_dt,
+                )
+                print(f"   抓取到 {len(items)} 个视频")
+                author_items.extend(items)
+            except Exception as e:
+                print(f"[!] 按 UP 主 {uid} 抓取失败：{e}")
+                # 单个 UP 失败不中断整体，继续抓其他
         # 合并到 parsed
         parsed = (parsed or []) + author_items
 
