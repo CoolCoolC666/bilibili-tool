@@ -38,6 +38,9 @@ test_result.txt
 cli_out.txt
 test_err.txt
 test_out.txt
+test_v_err.txt
+test_v_out.txt
+test_debug.py
 cli_v280_test*
 test_opus*.py
 test_fallback*.py
